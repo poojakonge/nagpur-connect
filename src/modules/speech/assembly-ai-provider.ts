@@ -11,7 +11,7 @@
       Fixed: correct teardown sequence.
    ════════════════════════════════════════════════════════ */
 
-import RecordRTC, { StereoAudioRecorder } from "recordrtc";
+
 import { RealtimeTranscriber } from "assemblyai";
 import {
   type ClientSpeechProvider,
@@ -51,7 +51,7 @@ function getSupportedMimeType(): string {
 export class AssemblyAiProvider implements ClientSpeechProvider {
   readonly name = "assemblyai";
   private transcriber: RealtimeTranscriber | null = null;
-  private recorder: RecordRTC | null = null;
+  private mediaRecorder: MediaRecorder | null = null;
   private micStream: MediaStream | null = null;
   private isActive = false;
   private timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -69,7 +69,8 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
   get isSupported(): boolean {
     return (
       typeof window !== "undefined" &&
-      !!navigator.mediaDevices?.getUserMedia
+      !!navigator.mediaDevices?.getUserMedia &&
+      typeof MediaRecorder !== "undefined"
     );
   }
 
@@ -233,30 +234,25 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       // Detect the best supported MIME type at runtime
       const mimeType = getSupportedMimeType();
 
-      this.recorder = new RecordRTC(this.micStream, {
-        type: "audio",
-        mimeType: mimeType as "audio/webm", // RecordRTC type accepts this
-        recorderType: StereoAudioRecorder,
-        timeSlice: 250,            // Send chunks every 250ms
-        desiredSampRate: 16_000,
-        numberOfAudioChannels: 1,
-        bufferSize: 4096,
-        audioBitsPerSecond: 128_000,
-        ondataavailable: async (blob: Blob) => {
-          if (this.sessionId !== currentSessionId || !this.transcriber) return;
-          if (blob.size === 0) return; // Skip empty blobs (common on mobile)
-          try {
-            const buffer = await blob.arrayBuffer();
-            if (buffer.byteLength > 0) {
-              this.transcriber.sendAudio(buffer);
-            }
-          } catch {
-            // WebSocket may have closed — ignore
-          }
-        },
+      this.mediaRecorder = new MediaRecorder(this.micStream, {
+        mimeType: mimeType,
       });
 
-      this.recorder.startRecording();
+      this.mediaRecorder.ondataavailable = async (event) => {
+        if (this.sessionId !== currentSessionId || !this.transcriber) return;
+        if (event.data.size === 0) return;
+        try {
+          const buffer = await event.data.arrayBuffer();
+          if (buffer.byteLength > 0) {
+            this.transcriber.sendAudio(buffer);
+          }
+        } catch {
+          // WebSocket may have closed — ignore
+        }
+      };
+
+      // Send chunks every 250ms
+      this.mediaRecorder.start(250);
 
       // ── Step 5: Auto-stop safety timer ────────────────
       this.timeoutId = setTimeout(() => {
@@ -283,11 +279,10 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
 
     if (!this.isActive) return;
 
-    if (this.recorder) {
-      this.recorder.stopRecording(() => {
-        // Give 800ms for final audio to be sent and transcribed
-        setTimeout(() => this.cleanupAsync(), 800);
-      });
+    if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
+      this.mediaRecorder.stop();
+      // Give 800ms for final audio to be sent and transcribed
+      setTimeout(() => this.cleanupAsync(), 800);
     } else {
       this.cleanupAsync();
     }
@@ -307,9 +302,13 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
     this.lastFinalText = "";
 
     // Stop recorder first (stop sending audio)
-    if (this.recorder) {
-      try { this.recorder.destroy(); } catch { /* ignore */ }
-      this.recorder = null;
+    if (this.mediaRecorder) {
+      try {
+        if (this.mediaRecorder.state !== "inactive") {
+          this.mediaRecorder.stop();
+        }
+      } catch { /* ignore */ }
+      this.mediaRecorder = null;
     }
 
     // Release microphone
