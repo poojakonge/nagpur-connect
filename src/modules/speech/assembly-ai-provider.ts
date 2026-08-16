@@ -1,30 +1,32 @@
 /* ════════════════════════════════════════════════════════
    AssemblyAI Speech Provider — Streaming v3
-   Real-time voice-to-text via AssemblyAI Streaming v3 API
 
-   PREVIOUS BUGS FIXED:
-   1. Used RealtimeTranscriber (v2 API: wss://api.assemblyai.com/v2/realtime/ws)
-      which has different event names and behaves differently on mobile.
-      Fixed: Migrated to StreamingTranscriber (v3: wss://streaming.assemblyai.com/v3/ws)
+   CRITICAL ARCHITECTURE NOTE:
+   In AssemblyAI Streaming v3 with includePartialTurns: true,
+   each Turn event contains the FULL transcript of the current turn
+   (not just the new words). The same turn_order fires multiple times:
 
-   2. Token endpoint used POST /v2/realtime/token (v2).
-      Fixed: Token endpoint now uses GET /v3/token.
+   turn_order=1, end_of_turn=false: "Teri"
+   turn_order=1, end_of_turn=false: "Teri Nazron"
+   turn_order=1, end_of_turn=false: "Teri Nazron Ne"
+   turn_order=1, end_of_turn=true:  "Teri Nazron Ne."   ← COMMITTED
 
-   3. MediaRecorder sends WebM/Opus container, NOT raw PCM16.
-      AssemblyAI Streaming v3 rejects non-PCM audio and closes the WebSocket.
-      Fixed: AudioContext + ScriptProcessorNode extracts raw Float32 and
-      converts to Int16 (PCM16, 16kHz, mono, little-endian) before sending.
+   turn_order=2, end_of_turn=false: "Mujhe"
+   turn_order=2, end_of_turn=true:  "Mujhe Bata Diya."  ← COMMITTED
 
-   4. v2 event names (FinalTranscript / PartialTranscript / message_type)
-      are WRONG for v3. v3 uses: Begin, Turn (with turn_is_formatted field),
-      and Termination events.
-      Fixed: Using v3 event names via the StreamingTranscriber SDK class.
+   So:
+   - We track which turn_order we last COMMITTED.
+   - On each Turn event: use the full transcript as the current turn's text.
+   - Only when end_of_turn=true: mark that turn as committed.
+   - The interim display = committed text + current turn text.
+   - The final emitted transcript is committed text only.
 
    AUDIO PIPELINE:
-   getUserMedia (16kHz mono)
-     → AudioContext.createScriptProcessor (4096 samples ≈ 256ms chunks)
+   getUserMedia (mono)
+     → AudioContext (native sample rate — read AFTER creation)
+     → ScriptProcessorNode (4096 samples)
      → Float32 → Int16 conversion
-     → transcriber.sendAudio(Int16Array.buffer)  [distinct, non-cumulative]
+     → transcriber.sendAudio(Int16.buffer)   [distinct, non-cumulative]
      → AssemblyAI wss://streaming.assemblyai.com/v3/ws
    ════════════════════════════════════════════════════════ */
 
@@ -52,6 +54,16 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
   /** Unique session ID — prevents stale callbacks from old sessions */
   sessionId: string | null = null;
 
+  /**
+   * Transcript state across turns.
+   * committedText: text from all COMPLETED (end_of_turn=true) turns joined.
+   * lastCommittedTurnOrder: the turn_order of the last committed turn.
+   * currentTurnText: the growing text of the CURRENT (in-progress) turn.
+   */
+  private committedText = "";
+  private lastCommittedTurnOrder = -1;
+  private currentTurnText = "";
+
   onResult: ((transcript: string, isFinal: boolean) => void) | null = null;
   onError: ((error: string) => void) | null = null;
   onStateChange: ((state: RecordingState) => void) | null = null;
@@ -74,42 +86,44 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       return;
     }
 
-    // Clean up any previous session completely
+    // Full cleanup of any lingering session
     await this.cleanupAsync();
 
     this.isActive = true;
     this.sessionId = crypto.randomUUID();
+    this.committedText = "";
+    this.lastCommittedTurnOrder = -1;
+    this.currentTurnText = "";
     const currentSessionId = this.sessionId;
     const sessionShort = currentSessionId.slice(0, 8);
 
-    console.log(`[Speech][${sessionShort}] Session started`);
+    console.log(`[Speech][${sessionShort}] Session START`);
 
     try {
       this.onStateChange?.("processing");
 
-      // ── Step 1: Microphone permission ──────────────────
+      // ── Step 1: Microphone ─────────────────────────────
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             channelCount: 1,
-            sampleRate: 16000,
             echoCancellation: true,
             noiseSuppression: true,
           },
         });
       } catch (permErr: unknown) {
         const errName = permErr instanceof Error ? permErr.name : String(permErr);
-        console.error(`[Speech][${sessionShort}] Mic permission error: ${errName}`);
+        console.error(`[Speech][${sessionShort}] Mic error: ${errName}`);
         if (errName === "NotAllowedError" || errName === "PermissionDeniedError") {
           this.onStateChange?.("permission_denied");
-          this.onError?.("Microphone permission denied. Please allow microphone access in your browser settings.");
+          this.onError?.("Microphone permission denied. Please allow access in your browser settings.");
         } else if (errName === "NotFoundError" || errName === "DevicesNotFoundError") {
           this.onStateChange?.("error");
           this.onError?.("No microphone found on this device.");
         } else if (errName === "NotReadableError") {
           this.onStateChange?.("error");
-          this.onError?.("Microphone is in use by another app. Please close other apps and try again.");
+          this.onError?.("Microphone is in use by another app.");
         } else {
           this.onStateChange?.("error");
           this.onError?.(`Could not access microphone: ${errName}`);
@@ -119,16 +133,28 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
         return;
       }
 
-      const track = stream.getAudioTracks()[0];
-      console.log(`[Speech][${sessionShort}] Mic granted — tracks: ${stream.getAudioTracks().length}, readyState: ${track?.readyState}, enabled: ${track?.enabled}, UA: ${navigator.userAgent.slice(0, 80)}`);
-
       if (this.sessionId !== currentSessionId) {
         stream.getTracks().forEach((t) => t.stop());
         return;
       }
       this.micStream = stream;
 
-      // ── Step 2: Get v3 temporary token ────────────────
+      const track = stream.getAudioTracks()[0];
+      console.log(`[Speech][${sessionShort}] Mic OK — readyState: ${track?.readyState}`);
+
+      // ── Step 2: AudioContext — detect ACTUAL sample rate ──
+      // We MUST read the real sample rate BEFORE creating StreamingTranscriber,
+      // because on Android/iOS the browser may not honour sampleRate: 16000.
+      // Sending audio at 48000Hz while telling AssemblyAI 16000Hz causes it
+      // to interpret audio 3× faster → garbled / premature cutoff.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      // Request 16000Hz. The browser may honour it or use its native rate.
+      this.audioContext = new AudioContextClass({ sampleRate: 16000 });
+      const actualSampleRate = this.audioContext.sampleRate;
+      console.log(`[Speech][${sessionShort}] AudioContext sampleRate: ${actualSampleRate}Hz (requested 16000Hz)`);
+
+      // ── Step 3: Get v3 temporary token ────────────────────
       let token: string;
       try {
         const res = await fetch("/api/speech/token", {
@@ -141,9 +167,9 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
         const data = await res.json();
         token = data.token;
         if (!token) throw new Error("Empty token received from server");
-        console.log(`[Speech][${sessionShort}] v3 token received (length: ${token.length})`);
+        console.log(`[Speech][${sessionShort}] v3 token OK`);
       } catch (tokenErr) {
-        console.error(`[Speech][${sessionShort}] Token fetch failed:`, tokenErr);
+        console.error(`[Speech][${sessionShort}] Token error:`, tokenErr);
         this.onError?.(
           tokenErr instanceof Error && tokenErr.name === "TimeoutError"
             ? "Speech service timed out. Check your internet connection."
@@ -159,44 +185,85 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
         return;
       }
 
-      // ── Step 3: Create StreamingTranscriber (v3) ──────
-      // v3 endpoint: wss://streaming.assemblyai.com/v3/ws
-      // v3 events: Begin, Turn (partial/final), Termination
+      // ── Step 4: Create StreamingTranscriber (v3) ──────────
+      // sampleRate = what the AudioContext ACTUALLY uses (not assumed 16000)
+      // connectTimeout = 10s to accommodate slow mobile connections
+      // includePartialTurns = true for live transcript display
+      // formatTurns = false (we handle text ourselves)
       this.transcriber = new StreamingTranscriber({
         token,
-        sampleRate: 16_000,
-        // encoding defaults to pcm_s16le (what we send)
-        includePartialTurns: true,   // get interim transcript updates
-        // keyterms replaces wordBoost in v3
+        sampleRate: actualSampleRate,
+        includePartialTurns: true,
+        connectTimeout: 10_000,
         keyterms: [
           "Nagpur", "NMC", "pothole", "waterlogging", "garbage",
           "Wardha", "Dharampeth", "Hingna", "Kamptee",
         ],
       });
 
-      // v3 event: 'open' fires when the server sends the Begin frame
+      // 'open' fires when server sends the Begin frame
       this.transcriber.on("open", (beginEvent) => {
         if (this.sessionId !== currentSessionId) return;
-        console.log(`[Speech][${sessionShort}] WebSocket OPEN — session_id: ${(beginEvent as any)?.session_id}`);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        console.log(`[Speech][${sessionShort}] OPEN — session_id: ${(beginEvent as any)?.session_id}`);
         this.onStateChange?.("recording");
       });
 
-      // v3 event: 'turn' — fires for both partial and final turns
-      // turn.turn_is_formatted === true → end of turn (final/formatted)
-      // turn.turn_is_formatted === false → partial/interim update
+      /**
+       * v3 Turn event — THE CRITICAL HANDLER.
+       *
+       * With includePartialTurns: true, AssemblyAI fires Turn events continuously
+       * as the user speaks. For a single utterance "Teri Nazron Ne":
+       *
+       *   { turn_order: 1, end_of_turn: false, transcript: "teri" }
+       *   { turn_order: 1, end_of_turn: false, transcript: "teri nazron" }
+       *   { turn_order: 1, end_of_turn: false, transcript: "teri nazron ne" }
+       *   { turn_order: 1, end_of_turn: true,  transcript: "Teri Nazron Ne." }
+       *
+       * The transcript field always contains THE FULL TEXT OF THE CURRENT TURN.
+       * We must NOT treat each event as a separate segment to append!
+       * We track turn_order to know when we move to a new turn.
+       *
+       * Old code was using turn_is_formatted as the commit signal,
+       * which caused "Teri Teri Nazron Teri Nazron Ne" duplication.
+       */
       this.transcriber.on("turn", (turn) => {
         if (this.sessionId !== currentSessionId) return;
         if (!turn.transcript) return;
 
-        const isFinal = turn.turn_is_formatted === true;
-        console.log(`[Speech][${sessionShort}] Turn — isFinal: ${isFinal}, text: "${turn.transcript.slice(0, 60)}"`);
+        const { turn_order, end_of_turn, transcript } = turn;
 
-        this.onResult?.(turn.transcript, isFinal);
+        if (end_of_turn) {
+          // This turn is COMPLETE. Commit its text once.
+          if (turn_order !== this.lastCommittedTurnOrder) {
+            // Append this turn to committed text
+            this.committedText = this.committedText
+              ? `${this.committedText} ${transcript.trim()}`
+              : transcript.trim();
+            this.lastCommittedTurnOrder = turn_order;
+            this.currentTurnText = "";
+
+            console.log(`[Speech][${sessionShort}] Turn #${turn_order} COMMITTED: "${transcript.slice(0, 60)}"`);
+            // Emit the full correct transcript as final
+            this.onResult?.(this.committedText, true);
+          }
+        } else {
+          // Partial update for the current turn.
+          // Replace currentTurnText (don't append!).
+          this.currentTurnText = transcript.trim();
+
+          // For display: show committed text + current partial
+          const displayText = this.committedText
+            ? `${this.committedText} ${this.currentTurnText}`
+            : this.currentTurnText;
+
+          this.onResult?.(displayText, false);
+        }
       });
 
       this.transcriber.on("error", (error: Error) => {
         if (this.sessionId !== currentSessionId) return;
-        console.error(`[Speech][${sessionShort}] StreamingTranscriber error:`, error.message);
+        console.error(`[Speech][${sessionShort}] Error:`, error.message);
         this.onError?.("Speech recognition encountered an error. Please try again.");
         this.onStateChange?.("error");
         this.cleanupAsync();
@@ -204,7 +271,7 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
 
       this.transcriber.on("close", (code: number, reason: string) => {
         if (this.sessionId !== currentSessionId) return;
-        console.warn(`[Speech][${sessionShort}] WebSocket CLOSED — code: ${code}, reason: "${reason}"`);
+        console.warn(`[Speech][${sessionShort}] CLOSED — code: ${code}, reason: "${reason}"`);
         if (this.isActive) {
           this.onStateChange?.("idle");
           this.isActive = false;
@@ -214,7 +281,7 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       try {
         await this.transcriber.connect();
       } catch (connErr) {
-        console.error(`[Speech][${sessionShort}] Failed to connect to AssemblyAI v3:`, connErr);
+        console.error(`[Speech][${sessionShort}] Connect failed:`, connErr);
         this.onError?.("Could not connect to speech service. Check your internet connection.");
         this.onStateChange?.("error");
         await this.cleanupAsync();
@@ -226,37 +293,25 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
         return;
       }
 
-      // ── Step 4: Start raw PCM16 audio pipeline ─────────
-      // AudioContext extracts Float32 samples directly from the mic.
-      // We convert Float32 → Int16 and send raw PCM16 (16kHz, mono).
-      // This is the ONLY encoding AssemblyAI v3 accepts by default.
-      // MediaRecorder outputs WebM/Opus which the v3 API rejects.
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      this.audioContext = new AudioContextClass({ sampleRate: 16000 });
-
+      // ── Step 5: Wire AudioContext → ScriptProcessor → sendAudio ──
       const source = this.audioContext.createMediaStreamSource(this.micStream);
-
-      // 4096 samples at 16kHz = ~256ms per chunk
+      // 4096 samples = ~256ms at 16kHz, ~93ms at 44100Hz (still acceptable)
       this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
 
       let chunkCount = 0;
       this.processor.onaudioprocess = (e) => {
         if (this.sessionId !== currentSessionId || !this.transcriber) return;
 
-        const inputData = e.inputBuffer.getChannelData(0); // Float32, 4096 samples
+        const inputData = e.inputBuffer.getChannelData(0);
         const pcm16 = new Int16Array(inputData.length);
-
         for (let i = 0; i < inputData.length; i++) {
           const s = Math.max(-1, Math.min(1, inputData[i]));
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
         chunkCount++;
-        if (chunkCount <= 5 || chunkCount % 20 === 0) {
-          // Log first 5 chunks and every 20th after (production-safe, no secrets)
-          console.log(`[Speech][${sessionShort}] Chunk #${chunkCount} → ${pcm16.byteLength} bytes PCM16`);
+        if (chunkCount <= 5 || chunkCount % 40 === 0) {
+          console.log(`[Speech][${sessionShort}] Chunk #${chunkCount} → ${pcm16.byteLength}B`);
         }
 
         try {
@@ -266,25 +321,25 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
         }
       };
 
-      // GainNode with gain=0 prevents mic audio from playing through speakers.
-      // processor MUST connect to destination for onaudioprocess to fire on Safari/Chrome.
+      // GainNode at 0 prevents mic echo; processor must connect to destination
+      // for onaudioprocess to fire reliably on Android Chrome / iOS Safari.
       this.gainNode = this.audioContext.createGain();
       this.gainNode.gain.value = 0;
       source.connect(this.processor);
       this.processor.connect(this.gainNode);
       this.gainNode.connect(this.audioContext.destination);
 
-      // ── Step 5: Auto-stop safety timer ────────────────
+      // ── Step 6: Safety timeout ─────────────────────────────
       this.timeoutId = setTimeout(() => {
         if (this.sessionId !== currentSessionId) return;
-        console.log(`[Speech][${sessionShort}] Max recording duration reached`);
+        console.log(`[Speech][${sessionShort}] Max recording time reached`);
         this.stop();
       }, MAX_RECORDING_MS);
 
-      console.log(`[Speech][${sessionShort}] Recording pipeline active — AudioContext sampleRate: ${this.audioContext.sampleRate}Hz`);
+      console.log(`[Speech][${sessionShort}] Recording ACTIVE — sampleRate: ${actualSampleRate}Hz`);
 
     } catch (err) {
-      console.error("[Speech] Unexpected start error:", err);
+      console.error("[Speech] Unexpected error:", err);
       this.onError?.(err instanceof Error ? err.message : "Failed to start recording");
       this.onStateChange?.("error");
       await this.cleanupAsync();
@@ -296,16 +351,19 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       clearTimeout(this.timeoutId);
       this.timeoutId = null;
     }
-
     if (!this.isActive) return;
-    console.log(`[Speech][${(this.sessionId || "").slice(0, 8)}] stop() called — allowing 800ms for final audio`);
 
-    if (this.audioContext && this.audioContext.state !== "closed") {
-      // Allow final PCM chunk to be processed and sent before cleanup
-      setTimeout(() => this.cleanupAsync(), 800);
-    } else {
-      this.cleanupAsync();
+    // If there's uncommitted partial text when user stops, emit it as final
+    if (this.currentTurnText) {
+      const finalText = this.committedText
+        ? `${this.committedText} ${this.currentTurnText}`
+        : this.currentTurnText;
+      console.log(`[Speech][${(this.sessionId || "").slice(0, 8)}] stop() — flushing partial: "${this.currentTurnText.slice(0, 40)}"`);
+      this.onResult?.(finalText, true);
     }
+
+    // Give 800ms for any final audio chunk to be processed before cleanup
+    setTimeout(() => this.cleanupAsync(), 800);
   }
 
   abort(): void {
@@ -320,8 +378,11 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
     const sessionShort = (this.sessionId || "").slice(0, 8);
     this.isActive = false;
     this.sessionId = null;
+    this.committedText = "";
+    this.lastCommittedTurnOrder = -1;
+    this.currentTurnText = "";
 
-    // 1. Disconnect Web Audio nodes first (stop sending audio)
+    // 1. Disconnect Web Audio nodes (stops audio flow to AssemblyAI)
     if (this.processor) {
       try { this.processor.disconnect(); } catch { /* ignore */ }
       this.processor = null;
@@ -337,21 +398,17 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
 
     // 2. Release microphone tracks
     if (this.micStream) {
-      this.micStream.getTracks().forEach((track) => track.stop());
+      this.micStream.getTracks().forEach((t) => t.stop());
       this.micStream = null;
     }
 
-    // 3. Close transcriber WebSocket last
+    // 3. Close WebSocket last
     if (this.transcriber) {
-      try {
-        this.transcriber.close(false);
-      } catch {
-        // Already closed — fine
-      }
+      try { this.transcriber.close(false); } catch { /* already closed */ }
       this.transcriber = null;
     }
 
-    console.log(`[Speech][${sessionShort}] Session cleaned up`);
+    console.log(`[Speech][${sessionShort}] Session CLEANED UP`);
     this.onStateChange?.("idle");
   }
 }

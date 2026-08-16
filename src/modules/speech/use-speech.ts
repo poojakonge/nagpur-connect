@@ -71,21 +71,20 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
         const trimmed = text.trim();
         if (!trimmed) return;
 
-        // Dedup: skip if identical to last committed segment
-        const segments = committedSegmentsRef.current;
-        const lastSegment = segments[segments.length - 1];
-        if (lastSegment === trimmed) return;
-
-        // Commit
-        segments.push(trimmed);
-        committedSegmentsRef.current = segments;
-        setTranscript(segments.join(" "));
+        // The AssemblyAI v3 provider emits the FULL accumulated correct transcript
+        // on each final (end_of_turn=true) Turn event. We simply replace the
+        // displayed transcript — never append to a segments array — because the
+        // provider already handles multi-turn accumulation internally.
+        committedSegmentsRef.current = [trimmed];
+        setTranscript(trimmed);
         setInterimTranscript("");
       } else {
-        // Partial: display-only, replaces previous partial
+        // Partial: provider sends committed + current-partial combined for display.
+        // Replace previous interim — do NOT append.
         setInterimTranscript(text);
       }
     };
+
 
     provider.onError = (err: string) => {
       console.warn(`[Speech] ${provider.name} error:`, err);
