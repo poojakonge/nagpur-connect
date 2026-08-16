@@ -1,25 +1,36 @@
 /* ════════════════════════════════════════════════════════
-   AssemblyAI Speech Provider — Streaming v3
+   AssemblyAI Speech Provider — Streaming v3 + MediaRecorder
 
-   AUDIO ARCHITECTURE:
-   - getUserMedia (mono, any rate)
-   - AudioContext at EXACTLY 16000Hz
-   - audioContext.resume() immediately (prevents mobile suspension)
-   - createMediaStreamSource() BEFORE async token fetch
-     → Keeps the mic stream "live" during setup (some browsers stop
-       the stream if nothing reads it for >1-2s)
-   - ScriptProcessorNode → Float32→Int16 → sendAudio()
-     with a guard flag: audio is only sent after WebSocket connects
-   - If AudioContext cannot run at 16000Hz (browser refuses),
-     we downsample before sending so AssemblyAI always receives 16kHz.
-   - AssemblyAI always told sampleRate: 16000 (hardcoded, not inferred).
+   ROOT CAUSE OF PREVIOUS BUG:
+   ScriptProcessorNode is DEPRECATED. Desktop Chrome still runs it
+   indefinitely, but Android Chrome throttles/stops onaudioprocess
+   after ~1-2 seconds (power savings). This caused the stream to
+   cut off on all mobile devices while working perfectly on desktop.
+
+   FIX:
+   Use MediaRecorder with WebM/Opus encoding instead of AudioContext
+   + ScriptProcessorNode. MediaRecorder:
+   ✅ Not deprecated — actively maintained
+   ✅ Runs on a separate audio thread (not throttled on mobile)
+   ✅ Fires ondataavailable reliably with timeslice parameter
+   ✅ Outputs Opus natively (no sample rate conversion needed)
+
+   AssemblyAI v3 supports encoding: "opus" (self-describing,
+   no sampleRate parameter needed — the format carries its own rate).
+
+   AUDIO PIPELINE:
+   getUserMedia (mono)
+     → MediaRecorder (audio/webm;codecs=opus, timeslice=250ms)
+     → ondataavailable (every 250ms)
+     → Blob → ArrayBuffer → transcriber.sendAudio()
+     → AssemblyAI wss://streaming.assemblyai.com/v3/ws (encoding=opus)
 
    TRANSCRIPT ARCHITECTURE (v3 Turn events):
-   - includePartialTurns: true  → Turn fires on every word update
-   - turn.end_of_turn: true     → this turn is complete; commit it
-   - turn.turn_order            → tracks which turn we last committed
-   - committedText              → all completed turns joined
-   - currentTurnText            → the growing text of the active turn
+   - includePartialTurns: true → Turn fires on every word update
+   - turn.end_of_turn: true   → commit this turn
+   - turn.turn_order          → prevents double-commit
+   - committedText            → all completed turns joined
+   - currentTurnText          → growing text of active turn
    ════════════════════════════════════════════════════════ */
 
 import { StreamingTranscriber } from "assemblyai/streaming";
@@ -30,28 +41,23 @@ import {
 } from "./types";
 
 const MAX_RECORDING_MS = 60_000;
-/** AssemblyAI v3 always expects 16kHz PCM — we always resample to this. */
-const TARGET_SAMPLE_RATE = 16_000;
+/** Interval at which MediaRecorder fires ondataavailable (ms) */
+const TIMESLICE_MS = 250;
 
 export class AssemblyAiProvider implements ClientSpeechProvider {
   readonly name = "assemblyai";
   private transcriber: StreamingTranscriber | null = null;
 
-  private audioContext: AudioContext | null = null;
-  private processor: ScriptProcessorNode | null = null;
-  private gainNode: GainNode | null = null;
   private micStream: MediaStream | null = null;
+  private recorder: MediaRecorder | null = null;
   private isActive = false;
   private timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-  /** Unique session ID — prevents stale callbacks from old sessions */
   sessionId: string | null = null;
 
   private committedText = "";
   private lastCommittedTurnOrder = -1;
   private currentTurnText = "";
-
-  /** True when stop() is called by the user, so close handler doesn't double-emit */
   private isStopping = false;
 
   onResult: ((transcript: string, isFinal: boolean) => void) | null = null;
@@ -61,7 +67,8 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
   get isSupported(): boolean {
     return (
       typeof window !== "undefined" &&
-      !!navigator.mediaDevices?.getUserMedia
+      !!navigator.mediaDevices?.getUserMedia &&
+      typeof MediaRecorder !== "undefined"
     );
   }
 
@@ -71,7 +78,7 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       return;
     }
     if (!this.isSupported) {
-      this.onError?.("Microphone not supported on this device.");
+      this.onError?.("Microphone or MediaRecorder not supported on this device.");
       return;
     }
 
@@ -84,7 +91,7 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
     this.lastCommittedTurnOrder = -1;
     this.currentTurnText = "";
     const currentSessionId = this.sessionId;
-    const s = currentSessionId.slice(0, 8); // short ID for logs
+    const s = currentSessionId.slice(0, 8);
 
     console.log(`[Speech][${s}] START`);
     this.onStateChange?.("processing");
@@ -98,7 +105,6 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             channelCount: 1,
-            sampleRate: { ideal: TARGET_SAMPLE_RATE }, // Hint, not enforced
             echoCancellation: true,
             noiseSuppression: true,
           },
@@ -134,103 +140,70 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       console.log(`[Speech][${s}] Mic OK — readyState: ${track?.readyState}`);
 
       // ══════════════════════════════════════════════════
-      // STEP 2 — AudioContext + MediaStreamSource (IMMEDIATELY)
+      // STEP 2 — Start MediaRecorder IMMEDIATELY
       //
-      // We wire the mic stream to an AudioContext RIGHT NOW, before
-      // the async token fetch and WebSocket connect. This is critical:
-      // some mobile browsers stop the audio track after ~1-2s if nothing
-      // is actively reading from it. createMediaStreamSource() keeps it alive.
+      // MediaRecorder keeps the mic stream alive and runs on
+      // a separate audio thread that is NOT throttled on Android.
+      // We start recording NOW (before token fetch and WebSocket)
+      // to prevent the browser from stopping the mic track.
       //
-      // We request 16kHz. If the browser refuses (native rate ≠ 16kHz),
-      // we resample in onaudioprocess to always send correct 16kHz audio.
+      // Audio data is buffered until wsReady=true, then sent.
       // ══════════════════════════════════════════════════
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      this.audioContext = new AudioContextClass({ sampleRate: TARGET_SAMPLE_RATE });
-      const actualRate = this.audioContext.sampleRate;
-      console.log(`[Speech][${s}] AudioContext sampleRate: ${actualRate}Hz (target: ${TARGET_SAMPLE_RATE}Hz)`);
+      const mimeType = this.selectMimeType();
+      console.log(`[Speech][${s}] MediaRecorder mimeType: ${mimeType}`);
 
-      // Resume BEFORE anything else — mobile browsers create AudioContexts suspended
-      if (this.audioContext.state === "suspended") {
-        console.log(`[Speech][${s}] AudioContext suspended — resuming`);
-        await this.audioContext.resume();
-      }
-      console.log(`[Speech][${s}] AudioContext state: "${this.audioContext.state}"`);
-
-      // Monitor for mid-session suspension (battery saver, tab switch)
-      this.audioContext.onstatechange = () => {
-        const state = this.audioContext?.state;
-        console.log(`[Speech][${s}] AudioContext → "${state}"`);
-        if (state === "suspended" && this.isActive && this.sessionId === currentSessionId) {
-          console.warn(`[Speech][${s}] AudioContext suspended mid-session — auto-resuming`);
-          this.audioContext?.resume().catch(() => {});
-        }
-      };
-
-      // Connect source to keep the mic track alive
-      const source = this.audioContext.createMediaStreamSource(this.micStream);
-
-      // Create the processor now but gate audio sending behind a flag.
-      // Audio flows through immediately (keeping stream alive) but PCM is
-      // only sent to AssemblyAI after the WebSocket is connected.
+      this.recorder = new MediaRecorder(stream, { mimeType });
       let wsReady = false;
       let chunkCount = 0;
-      // Resample ratio: if AudioContext is 44100Hz but we want 16000Hz, ratio = 2.75625
-      const resampleRatio = actualRate / TARGET_SAMPLE_RATE;
+      // Buffer chunks until WebSocket is ready
+      const pendingChunks: ArrayBuffer[] = [];
 
-      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
-      this.processor.onaudioprocess = (e) => {
-        // Gate: only send after WebSocket is connected
-        if (!wsReady || this.sessionId !== currentSessionId || !this.transcriber) return;
-
-        const input = e.inputBuffer.getChannelData(0); // Float32 at actualRate
-
-        let pcm16: Int16Array;
-        if (resampleRatio === 1) {
-          // AudioContext already at 16kHz — direct conversion
-          pcm16 = new Int16Array(input.length);
-          for (let i = 0; i < input.length; i++) {
-            const s = Math.max(-1, Math.min(1, input[i]));
-            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-          }
-        } else {
-          // Resample to 16kHz via nearest-neighbour (fast, sufficient for ASR)
-          const outLen = Math.floor(input.length / resampleRatio);
-          pcm16 = new Int16Array(outLen);
-          for (let i = 0; i < outLen; i++) {
-            const srcIdx = Math.min(Math.round(i * resampleRatio), input.length - 1);
-            const s = Math.max(-1, Math.min(1, input[srcIdx]));
-            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-          }
-        }
+      this.recorder.ondataavailable = async (event) => {
+        if (this.sessionId !== currentSessionId || !event.data.size) return;
 
         chunkCount++;
-        if (chunkCount <= 5 || chunkCount % 40 === 0) {
-          console.log(`[Speech][${s}] Chunk #${chunkCount} → ${pcm16.byteLength}B @16kHz`);
+        const buffer = await event.data.arrayBuffer();
+
+        if (chunkCount <= 5 || chunkCount % 20 === 0) {
+          console.log(`[Speech][${s}] Chunk #${chunkCount} → ${buffer.byteLength}B (wsReady: ${wsReady})`);
         }
 
-        try {
-          this.transcriber.sendAudio(pcm16.buffer);
-        } catch {
-          /* WebSocket may have closed — ignore silently */
+        if (wsReady && this.transcriber) {
+          // Send any buffered chunks first
+          while (pendingChunks.length > 0) {
+            const pending = pendingChunks.shift()!;
+            try { this.transcriber.sendAudio(pending); } catch { /* ws closed */ }
+          }
+          // Then send the current chunk
+          try {
+            this.transcriber.sendAudio(buffer);
+          } catch {
+            /* WebSocket may have closed — ignore */
+          }
+        } else {
+          // Buffer until WebSocket is ready
+          pendingChunks.push(buffer);
         }
       };
 
-      this.gainNode = this.audioContext.createGain();
-      this.gainNode.gain.value = 0; // Silent — don't echo mic through speakers
-      source.connect(this.processor);
-      this.processor.connect(this.gainNode);
-      this.gainNode.connect(this.audioContext.destination);
-      // Audio pipeline is now live — mic track will stay alive
+      this.recorder.onerror = (event) => {
+        console.error(`[Speech][${s}] MediaRecorder error:`, event);
+        this.onError?.("Audio recording error. Please try again.");
+        this.onStateChange?.("error");
+        this.cleanupAsync();
+      };
 
-      if (this.sessionId !== currentSessionId) {
-        await this.cleanupAsync();
-        return;
-      }
+      this.recorder.onstop = () => {
+        console.log(`[Speech][${s}] MediaRecorder stopped`);
+      };
+
+      // Start recording with timeslice — fires ondataavailable every 250ms
+      this.recorder.start(TIMESLICE_MS);
+      console.log(`[Speech][${s}] MediaRecorder STARTED (timeslice: ${TIMESLICE_MS}ms)`);
 
       // ══════════════════════════════════════════════════
       // STEP 3 — Get v3 temporary token
-      // (mic stream is kept alive by createMediaStreamSource above)
+      // (MediaRecorder keeps the mic alive during this async call)
       // ══════════════════════════════════════════════════
       let token: string;
       try {
@@ -265,12 +238,14 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       // ══════════════════════════════════════════════════
       // STEP 4 — Create StreamingTranscriber (v3)
       //
-      // Always 16000Hz — regardless of what actualRate was.
-      // We handle resampling in the ScriptProcessorNode above.
+      // encoding: "opus" → AssemblyAI reads the sample rate
+      // and codec info from the WebM/Opus container headers.
+      // No sampleRate parameter needed.
       // ══════════════════════════════════════════════════
       this.transcriber = new StreamingTranscriber({
         token,
-        sampleRate: TARGET_SAMPLE_RATE, // ALWAYS 16000 — never pass native rate
+        encoding: "opus",
+        // sampleRate omitted — opus is self-describing
         includePartialTurns: true,
         connectTimeout: 10_000,
         keyterms: [
@@ -279,13 +254,20 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
         ],
       });
 
-      // open fires on Begin frame
+      // 'open' fires when server sends the Begin frame
       this.transcriber.on("open", (beginEvent) => {
         if (this.sessionId !== currentSessionId) return;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         console.log(`[Speech][${s}] OPEN — session_id: ${(beginEvent as any)?.session_id}`);
-        // Unlock audio sending NOW that WebSocket is connected
+        // NOW unlock audio sending — flush any buffered chunks
         wsReady = true;
+        if (this.transcriber && pendingChunks.length > 0) {
+          console.log(`[Speech][${s}] Flushing ${pendingChunks.length} buffered chunks`);
+          while (pendingChunks.length > 0) {
+            const pending = pendingChunks.shift()!;
+            try { this.transcriber.sendAudio(pending); } catch { break; }
+          }
+        }
         this.onStateChange?.("recording");
       });
 
@@ -327,11 +309,10 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
         if (this.sessionId !== currentSessionId) return;
         console.warn(`[Speech][${s}] CLOSED — code: ${code}, reason: "${reason}"`);
 
-        // Unexpected close (not from user pressing Stop) — flush partial as final
+        // Unexpected close — flush partial as final
         if (this.isActive && !this.isStopping) {
-          const saved = this.committedText || this.currentTurnText
-            ? [this.committedText, this.currentTurnText].filter(Boolean).join(" ").trim()
-            : "";
+          const saved = [this.committedText, this.currentTurnText]
+            .filter(Boolean).join(" ").trim();
           if (saved) {
             console.log(`[Speech][${s}] Unexpected close — saving: "${saved.slice(0, 60)}"`);
             this.onResult?.(saved, true);
@@ -346,7 +327,7 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       // ══════════════════════════════════════════════════
       try {
         await this.transcriber.connect();
-        // wsReady = true is set in the 'open' handler above
+        // wsReady = true is set in the 'open' handler
       } catch (connErr) {
         console.error(`[Speech][${s}] Connect failed:`, connErr);
         this.onError?.("Could not connect to speech service.");
@@ -389,16 +370,20 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
     this.isStopping = true;
 
     // Flush any partial transcript so user's speech is never lost
-    const saved = this.committedText || this.currentTurnText
-      ? [this.committedText, this.currentTurnText].filter(Boolean).join(" ").trim()
-      : "";
+    const saved = [this.committedText, this.currentTurnText]
+      .filter(Boolean).join(" ").trim();
     if (saved) {
       console.log(`[Speech][${(this.sessionId || "").slice(0, 8)}] stop() — saving: "${saved.slice(0, 60)}"`);
       this.onResult?.(saved, true);
     }
 
-    // Brief delay so the final PCM chunk can reach AssemblyAI
-    setTimeout(() => this.cleanupAsync(), 800);
+    // Stop MediaRecorder first (triggers final ondataavailable), then cleanup
+    if (this.recorder && this.recorder.state !== "inactive") {
+      try { this.recorder.stop(); } catch { /* ignore */ }
+    }
+
+    // Brief delay for final audio chunk to reach AssemblyAI
+    setTimeout(() => this.cleanupAsync(), 500);
   }
 
   abort(): void {
@@ -407,6 +392,23 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       this.timeoutId = null;
     }
     this.cleanupAsync();
+  }
+
+  /**
+   * Select the best supported MIME type for MediaRecorder.
+   * Prefer WebM/Opus (Chrome/Android/Edge) > OGG/Opus (Firefox) > default.
+   */
+  private selectMimeType(): string {
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+      "audio/mp4",
+    ];
+    for (const mime of candidates) {
+      if (MediaRecorder.isTypeSupported(mime)) return mime;
+    }
+    return ""; // Let browser decide
   }
 
   private async cleanupAsync(): Promise<void> {
@@ -418,24 +420,21 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
     this.lastCommittedTurnOrder = -1;
     this.currentTurnText = "";
 
-    if (this.audioContext) this.audioContext.onstatechange = null;
+    // 1. Stop MediaRecorder
+    if (this.recorder) {
+      if (this.recorder.state !== "inactive") {
+        try { this.recorder.stop(); } catch { /* ignore */ }
+      }
+      this.recorder = null;
+    }
 
-    if (this.processor) {
-      try { this.processor.disconnect(); } catch { /* ignore */ }
-      this.processor = null;
-    }
-    if (this.gainNode) {
-      try { this.gainNode.disconnect(); } catch { /* ignore */ }
-      this.gainNode = null;
-    }
-    if (this.audioContext) {
-      try { this.audioContext.close(); } catch { /* ignore */ }
-      this.audioContext = null;
-    }
+    // 2. Release microphone tracks
     if (this.micStream) {
       this.micStream.getTracks().forEach((t) => t.stop());
       this.micStream = null;
     }
+
+    // 3. Close WebSocket last
     if (this.transcriber) {
       try { this.transcriber.close(false); } catch { /* ignore */ }
       this.transcriber = null;
