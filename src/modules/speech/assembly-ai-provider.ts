@@ -64,6 +64,12 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
   private lastCommittedTurnOrder = -1;
   private currentTurnText = "";
 
+  /**
+   * Set to true when stop() is called intentionally (user pressed Stop).
+   * Prevents the close handler from double-emitting the partial transcript.
+   */
+  private isStopping = false;
+
   onResult: ((transcript: string, isFinal: boolean) => void) | null = null;
   onError: ((error: string) => void) | null = null;
   onStateChange: ((state: RecordingState) => void) | null = null;
@@ -146,13 +152,33 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       // We MUST read the real sample rate BEFORE creating StreamingTranscriber,
       // because on Android/iOS the browser may not honour sampleRate: 16000.
       // Sending audio at 48000Hz while telling AssemblyAI 16000Hz causes it
-      // to interpret audio 3× faster → garbled / premature cutoff.
+      // to interpret audio 3x faster → garbled / premature cutoff.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       // Request 16000Hz. The browser may honour it or use its native rate.
       this.audioContext = new AudioContextClass({ sampleRate: 16000 });
       const actualSampleRate = this.audioContext.sampleRate;
-      console.log(`[Speech][${sessionShort}] AudioContext sampleRate: ${actualSampleRate}Hz (requested 16000Hz)`);
+
+      // CRITICAL: Mobile browsers (Android Chrome, iOS Safari) often create
+      // AudioContexts in a SUSPENDED state due to autoplay policies.
+      // If suspended, onaudioprocess fires for a brief moment then stops,
+      // causing AssemblyAI to receive 1-2s of audio then silence → session close.
+      // We must explicitly resume before starting audio capture.
+      if (this.audioContext.state === "suspended") {
+        console.log(`[Speech][${sessionShort}] AudioContext suspended on creation — resuming...`);
+        await this.audioContext.resume();
+      }
+      console.log(`[Speech][${sessionShort}] AudioContext state: "${this.audioContext.state}", sampleRate: ${actualSampleRate}Hz`);
+
+      // Monitor for future suspensions (battery saver, tab switch, etc.)
+      this.audioContext.onstatechange = () => {
+        const state = this.audioContext?.state;
+        console.log(`[Speech][${sessionShort}] AudioContext state → "${state}"`);
+        if (state === "suspended" && this.isActive && this.sessionId === currentSessionId) {
+          console.warn(`[Speech][${sessionShort}] AudioContext suspended mid-session — attempting auto-resume`);
+          this.audioContext?.resume().catch(() => {});
+        }
+      };
 
       // ── Step 3: Get v3 temporary token ────────────────────
       let token: string;
@@ -272,7 +298,22 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       this.transcriber.on("close", (code: number, reason: string) => {
         if (this.sessionId !== currentSessionId) return;
         console.warn(`[Speech][${sessionShort}] CLOSED — code: ${code}, reason: "${reason}"`);
-        if (this.isActive) {
+
+        // If the close was NOT triggered by the user pressing Stop,
+        // this is an unexpected disconnect. Flush any uncommitted transcript
+        // as a final so the user's speech is never silently lost.
+        if (this.isActive && !this.isStopping) {
+          const anyText = this.committedText || this.currentTurnText
+            ? (this.committedText
+              ? (this.currentTurnText
+                ? `${this.committedText} ${this.currentTurnText}`
+                : this.committedText)
+              : this.currentTurnText)
+            : "";
+          if (anyText.trim()) {
+            console.log(`[Speech][${sessionShort}] Unexpected close — flushing partial as final: "${anyText.slice(0, 60)}"`);
+            this.onResult?.(anyText.trim(), true);
+          }
           this.onStateChange?.("idle");
           this.isActive = false;
         }
@@ -353,16 +394,26 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
     }
     if (!this.isActive) return;
 
-    // If there's uncommitted partial text when user stops, emit it as final
-    if (this.currentTurnText) {
-      const finalText = this.committedText
-        ? `${this.committedText} ${this.currentTurnText}`
-        : this.currentTurnText;
-      console.log(`[Speech][${(this.sessionId || "").slice(0, 8)}] stop() — flushing partial: "${this.currentTurnText.slice(0, 40)}"`);
-      this.onResult?.(finalText, true);
+    // Mark as intentional stop so the close handler doesn't double-emit partial
+    this.isStopping = true;
+
+    // Flush any in-progress partial turn as a final before cleanup.
+    // This ensures the user's last words are always captured even if
+    // AssemblyAI hasn't sent end_of_turn=true yet.
+    const partialText = this.committedText || this.currentTurnText
+      ? (this.committedText
+        ? (this.currentTurnText
+          ? `${this.committedText} ${this.currentTurnText}`
+          : this.committedText)
+        : this.currentTurnText)
+      : "";
+
+    if (partialText.trim()) {
+      console.log(`[Speech][${(this.sessionId || "").slice(0, 8)}] stop() — flushing: "${partialText.slice(0, 60)}"`);
+      this.onResult?.(partialText.trim(), true);
     }
 
-    // Give 800ms for any final audio chunk to be processed before cleanup
+    // Give 800ms for the final PCM chunk to be sent before closing
     setTimeout(() => this.cleanupAsync(), 800);
   }
 
@@ -377,12 +428,16 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
   private async cleanupAsync(): Promise<void> {
     const sessionShort = (this.sessionId || "").slice(0, 8);
     this.isActive = false;
+    this.isStopping = false;
     this.sessionId = null;
     this.committedText = "";
     this.lastCommittedTurnOrder = -1;
     this.currentTurnText = "";
 
     // 1. Disconnect Web Audio nodes (stops audio flow to AssemblyAI)
+    if (this.audioContext) {
+      this.audioContext.onstatechange = null; // Remove listener before closing
+    }
     if (this.processor) {
       try { this.processor.disconnect(); } catch { /* ignore */ }
       this.processor = null;
