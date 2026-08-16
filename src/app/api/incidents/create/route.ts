@@ -57,6 +57,7 @@ export async function POST(request: NextRequest) {
       departmentAnswers,
       selectedDepartment,
       aiConversation,
+      finalReport: clientFinalReport,
       privacyLevel: clientPrivacy,
     } = body as {
       originalText: string;
@@ -68,6 +69,7 @@ export async function POST(request: NextRequest) {
       departmentAnswers?: Record<string, string | string[]>;
       selectedDepartment?: string;
       aiConversation?: AIConversationItem[];
+      finalReport?: Record<string, unknown> | null;
       privacyLevel?: string;
     };
 
@@ -98,15 +100,15 @@ export async function POST(request: NextRequest) {
     // Map severity
     const severity = (analysis.severity.level || "medium").toUpperCase();
 
-    // Build final AI report JSON
+    // Build final AI report JSON — merge Stage 3 synthesis if available
     const finalAiReport = {
       incidentType: analysis.incidentType,
       category: analysis.mainCategoryName,
       subcategory: analysis.subcategory,
-      summary: analysis.summary,
+      summary: clientFinalReport?.finalSummary || analysis.summary,
       severity: analysis.severity,
       priority: analysis.priority,
-      affectedPeople: analysis.affectedPeople,
+      affectedPeople: clientFinalReport?.affectedPeople ?? analysis.affectedPeople,
       departments: analysis.departments,
       location: analysis.location,
       privacy: analysis.privacy,
@@ -116,6 +118,11 @@ export async function POST(request: NextRequest) {
       questionsForCitizen: analysis.questionsForCitizen,
       aiProvider: analysis.aiProvider,
       aiModel: analysis.aiModel,
+      // Stage 3 synthesis
+      keyFindings: clientFinalReport?.keyFindings || [],
+      recommendedActions: clientFinalReport?.recommendedActions || [],
+      urgencyReason: clientFinalReport?.urgencyReason || "",
+      finalSummary: clientFinalReport?.finalSummary || null,
       generatedAt: new Date().toISOString(),
     };
 

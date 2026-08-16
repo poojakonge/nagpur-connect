@@ -3,6 +3,7 @@
    Uses Groq Llama API — returns structured JSON
    Stage 1: Full analysis + department mismatch detection
    Stage 2: Department-specific questions (lightweight)
+   Stage 3: Final report synthesis incorporating answers
    ════════════════════════════════════════════════════════ */
 
 import Groq from "groq-sdk";
@@ -15,60 +16,47 @@ export interface AIRawAnalysis {
   incidentType: string;
   mainCategory: string;
   subcategory: string;
-
   summary: string;
-
   severity: {
     level: "critical" | "high" | "medium" | "low";
     score: number;
     reason: string;
   };
-
   affectedPeople: number | null;
-
   location: {
     required: boolean;
     provided: boolean;
     text: string | null;
   };
-
   attachments: {
     required: boolean;
     recommended: boolean;
     reason: string;
   };
-
   privacy: {
     level: "normal" | "restricted" | "sensitive";
     protectIdentity: boolean;
   };
-
   requiredDepartments: Array<{
     departmentType: string;
     reason: string;
   }>;
-
   confidence: {
     overall: number;
     category: number;
     severity: number;
     departmentRouting: number;
   };
-
-  /** NEW: Was there a department mismatch? */
   mismatch: boolean;
-  /** NEW: If mismatch=true, what is the correct category slug? */
   suggestedCategory: string | null;
-  /** NEW: Human-readable mismatch explanation */
   mismatchReason: string | null;
-
   questionsForCitizen: Array<{
     question: string;
     reason: string;
   }>;
 }
 
-/** Stage 2 output — department-specific questions with interactive types */
+/** Stage 2 output — department-specific questions */
 export interface AIQuestionSet {
   questions: Array<{
     id: string;
@@ -80,7 +68,17 @@ export interface AIQuestionSet {
   }>;
 }
 
-// Build the category/subcategory reference for the prompt
+/** Stage 3 output — final synthesized report */
+export interface AIFinalReport {
+  finalSummary: string;
+  severity: string;
+  priorityScore: number;
+  affectedPeople: number | null;
+  keyFindings: string[];
+  recommendedActions: string[];
+  urgencyReason: string;
+}
+
 function buildCategoryReference(): string {
   return CATEGORIES.map((c) => {
     const subs = c.subcategories.map((s) => `      - ${s.slug}: ${s.name}`).join("\n");
@@ -88,7 +86,6 @@ function buildCategoryReference(): string {
   }).join("\n\n");
 }
 
-// Build the department context injection for the prompt
 function buildDepartmentContext(selectedDepartment: string): string {
   const cat = CATEGORIES.find((c) => c.slug === selectedDepartment);
   const deptConfig = getDeptConfig(selectedDepartment);
@@ -197,9 +194,7 @@ export class GroqIncidentAnalysisProvider {
   private fastModel = "llama-3.1-8b-instant";
 
   constructor() {
-    this.client = new Groq({
-      apiKey: env.groqApiKey,
-    });
+    this.client = new Groq({ apiKey: env.groqApiKey });
   }
 
   /** Stage 1 — Full analysis with optional dept context */
@@ -210,7 +205,6 @@ export class GroqIncidentAnalysisProvider {
   }): Promise<{ analysis: AIRawAnalysis; model: string; processingTimeMs: number }> {
     const startTime = Date.now();
 
-    // Build dynamic system prompt
     let systemPrompt = BASE_SYSTEM_PROMPT;
     if (params.selectedDepartment) {
       systemPrompt += "\n\n" + buildDepartmentContext(params.selectedDepartment);
@@ -235,12 +229,10 @@ export class GroqIncidentAnalysisProvider {
     const rawContent = completion.choices[0]?.message?.content || "{}";
     const analysis = JSON.parse(rawContent) as AIRawAnalysis;
 
-    // Basic validation
     if (!analysis.mainCategory || !analysis.summary || !analysis.severity) {
       throw new Error("AI response missing required fields (mainCategory, summary, severity)");
     }
 
-    // Ensure mismatch fields exist
     if (analysis.mismatch === undefined) analysis.mismatch = false;
     if (analysis.suggestedCategory === undefined) analysis.suggestedCategory = null;
     if (analysis.mismatchReason === undefined) analysis.mismatchReason = null;
@@ -254,15 +246,22 @@ export class GroqIncidentAnalysisProvider {
 
   /**
    * Stage 2 — Generate department-specific questions.
-   * Uses fast model, returns minimal JSON.
-   * Already-known info is passed so AI does NOT re-ask.
+   * Uses fast model. Already-known info prevents re-asking.
    */
   async generateDeptQuestions(params: {
     summary: string;
     departmentSlug: string;
     departmentName: string;
     alreadyKnown: string[];
-    questionPool: Array<{ id: string; question: string; type: string; options?: string[]; placeholder?: string; required: boolean; skipIfMentioned?: string[] }>;
+    questionPool: Array<{
+      id: string;
+      question: string;
+      type: string;
+      options?: string[];
+      placeholder?: string;
+      required: boolean;
+      skipIfMentioned?: string[];
+    }>;
     originalText: string;
   }): Promise<AIQuestionSet> {
     const poolJson = JSON.stringify(params.questionPool.slice(0, 8), null, 2);
@@ -304,14 +303,12 @@ Select max 4 most relevant questions that are NOT already answered.`;
       const rawContent = completion.choices[0]?.message?.content || '{"questions":[]}';
       const result = JSON.parse(rawContent) as AIQuestionSet;
 
-      // Clamp to max 4
       if (result.questions && result.questions.length > 4) {
         result.questions = result.questions.slice(0, 4);
       }
 
       return result;
     } catch {
-      // Fallback: return first 3 required questions from pool
       const fallback = params.questionPool
         .filter((q) => q.required)
         .slice(0, 3)
@@ -325,6 +322,108 @@ Select max 4 most relevant questions that are NOT already answered.`;
         }));
 
       return { questions: fallback };
+    }
+  }
+
+  /**
+   * Stage 3 — Generate final structured report incorporating citizen answers.
+   * Uses fast model. Called after citizen answers all dept questions.
+   */
+  async generateFinalReport(params: {
+    originalText: string;
+    summary: string;
+    mainCategory: string;
+    severity: string;
+    priorityScore: number;
+    departments: Array<{ code: string; name: string }>;
+    questions: Array<{ questionText: string; answerValue: string }>;
+    locationText?: string | null;
+  }): Promise<AIFinalReport> {
+    const qaPairs = params.questions
+      .filter((q) => q.answerValue)
+      .map((q) => `Q: ${q.questionText}\nA: ${q.answerValue}`)
+      .join("\n\n");
+
+    const systemPrompt = `You are the final report synthesizer for Nagpur Connect, a civic incident management platform in Nagpur, India.
+
+You have received:
+1. A citizen's original incident report
+2. An initial AI analysis
+3. Additional information collected via follow-up questions
+
+Your job: Synthesize ALL of this into a final, definitive incident assessment.
+
+Return ONLY valid JSON with this exact schema:
+{
+  "finalSummary": "1-2 sentence definitive summary incorporating all collected information (max 300 chars)",
+  "severity": "critical|high|medium|low",
+  "priorityScore": 0-100,
+  "affectedPeople": null or number,
+  "keyFindings": ["finding 1", "finding 2", "finding 3"],
+  "recommendedActions": ["action 1", "action 2"],
+  "urgencyReason": "1 sentence explaining urgency level"
+}
+
+Rules:
+- If any answer indicates danger/emergency, RAISE severity accordingly
+- keyFindings must incorporate the citizen's answers (max 4 items)
+- recommendedActions are for the responding department (max 3 items)
+- Be specific — use details from the answers`;
+
+    const userMessage = `ORIGINAL REPORT:
+"${params.originalText}"
+
+INITIAL AI ANALYSIS:
+Category: ${params.mainCategory}
+Summary: ${params.summary}
+Severity: ${params.severity} (score: ${params.priorityScore})
+Departments: ${params.departments.map((d) => d.name).join(", ")}
+${params.locationText ? `Location: ${params.locationText}` : ""}
+
+CITIZEN'S ANSWERS TO FOLLOW-UP QUESTIONS:
+${qaPairs || "(No answers provided)"}
+
+Generate the final definitive report.`;
+
+    try {
+      const completion = await this.client.chat.completions.create({
+        model: this.fastModel,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+        temperature: 0.1,
+        max_tokens: 600,
+        response_format: { type: "json_object" },
+      });
+
+      const raw = completion.choices[0]?.message?.content || "{}";
+      const result = JSON.parse(raw);
+
+      return {
+        finalSummary: result.finalSummary || params.summary,
+        severity: result.severity || params.severity,
+        priorityScore: Math.max(0, Math.min(100, result.priorityScore ?? params.priorityScore)),
+        affectedPeople: result.affectedPeople ?? null,
+        keyFindings: Array.isArray(result.keyFindings) ? result.keyFindings.slice(0, 4) : [],
+        recommendedActions: Array.isArray(result.recommendedActions) ? result.recommendedActions.slice(0, 3) : [],
+        urgencyReason: result.urgencyReason || "",
+      };
+    } catch (err) {
+      console.error("[AI] Final report generation failed:", err);
+      // Non-fatal fallback
+      return {
+        finalSummary: params.summary,
+        severity: params.severity,
+        priorityScore: params.priorityScore,
+        affectedPeople: null,
+        keyFindings: params.questions
+          .filter((q) => q.answerValue)
+          .map((q) => `${q.questionText}: ${q.answerValue}`)
+          .slice(0, 4),
+        recommendedActions: [],
+        urgencyReason: "",
+      };
     }
   }
 }

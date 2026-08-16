@@ -1,15 +1,21 @@
 /* ════════════════════════════════════════════════════════
    useSpeech — React hook for voice input
-   Primary: AssemblyAI (if token available)
-   Fallback: Browser Web Speech API
    
-   Key design decisions:
-   - useRef for committed segments to prevent stale closure issues
-   - Session ID prevents cross-session pollution
-   - Transcript built from committed segments array (not string concat)
-   - Partial transcripts are display-only, never committed
-   - Each startRecording() creates a clean session
-   - NEVER auto-submits to AI
+   KEY FIX: Previously, the provider was chosen ONCE at mount.
+   If the AssemblyAI token fetch failed at cold start, the hook
+   was permanently locked to BrowserSpeechProvider for the rest
+   of the session — even if AssemblyAI became available later.
+   
+   NEW DESIGN: Provider is selected LAZILY on each startRecording().
+   This means:
+   - First tap: tries AssemblyAI, falls back to browser if unavailable
+   - Second tap: tries AssemblyAI again (cold start might have warmed up)
+   - Error states are surfaced per-session, not globally
+   
+   Transcript rules:
+   - Partial transcripts: display-only, replaced by next partial
+   - Final transcripts: committed to segments array, never appended again
+   - Each startRecording() creates a completely clean session
    ════════════════════════════════════════════════════════ */
 
 "use client";
@@ -40,48 +46,43 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
   const [transcript, setTranscript] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [providerName, setProviderName] = useState("browser");
+  const [providerName, setProviderName] = useState("assemblyai");
 
   const providerRef = useRef<ClientSpeechProvider | null>(null);
-  const initRef = useRef(false);
 
   /**
    * Committed transcript segments — array of final strings.
-   * Using a ref prevents stale closures in onResult callbacks.
-   * The transcript state is derived from joining these segments.
+   * Ref prevents stale closures in onResult callbacks.
    */
   const committedSegmentsRef = useRef<string[]>([]);
 
   /**
-   * Session ID ref — matches the provider's sessionId.
-   * Used to ignore late-arriving callbacks from previous sessions.
+   * Session ID — matches the provider's sessionId.
+   * Used to discard late-arriving callbacks from old sessions.
    */
   const sessionIdRef = useRef<string | null>(null);
 
   const wireCallbacks = useCallback((provider: ClientSpeechProvider) => {
     provider.onResult = (text: string, isFinal: boolean) => {
-      // Guard: ignore results from stale sessions
+      // Guard: discard if provider session doesn't match our tracked session
       if (provider.sessionId !== sessionIdRef.current) return;
 
       if (isFinal) {
         const trimmed = text.trim();
         if (!trimmed) return;
 
-        // Deduplicate: check last committed segment
+        // Dedup: skip if identical to last committed segment
         const segments = committedSegmentsRef.current;
-        if (segments.length > 0 && segments[segments.length - 1] === trimmed) {
-          return; // Skip exact duplicate
-        }
+        const lastSegment = segments[segments.length - 1];
+        if (lastSegment === trimmed) return;
 
-        // Commit this segment
+        // Commit
         segments.push(trimmed);
         committedSegmentsRef.current = segments;
-
-        // Update transcript state from committed segments
         setTranscript(segments.join(" "));
         setInterimTranscript("");
       } else {
-        // Partial/interim — display only, replaces previous interim
+        // Partial: display-only, replaces previous partial
         setInterimTranscript(text);
       }
     };
@@ -93,49 +94,19 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
 
     provider.onStateChange = (newState: RecordingState) => {
       setState(newState);
+      if (newState === "recording") {
+        setError(null); // Clear previous errors on successful start
+      }
     };
   }, []);
 
-  // Initialize — try AssemblyAI first, fall back to Browser
+  // Cleanup on unmount
   useEffect(() => {
-    if (initRef.current) return;
-    initRef.current = true;
-
-    async function init() {
-      // Check if AssemblyAI token endpoint is available
-      try {
-        const res = await fetch("/api/speech/token", { method: "GET" });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.token) {
-            // AssemblyAI is available — use it as the primary provider
-            const { AssemblyAiProvider } = await import("./assembly-ai-provider");
-            const aaiProvider = new AssemblyAiProvider();
-            wireCallbacks(aaiProvider);
-            providerRef.current = aaiProvider;
-            setProviderName("assemblyai");
-            console.log("[Speech] Using AssemblyAI provider");
-            return;
-          }
-        }
-      } catch {
-        // AssemblyAI unavailable — fall through to browser
-      }
-
-      // Fallback: Browser Web Speech API
-      const browser = new BrowserSpeechProvider();
-      wireCallbacks(browser);
-      providerRef.current = browser;
-      setProviderName("browser");
-      console.log("[Speech] Using Browser Web Speech API provider");
-    }
-
-    init();
-
     return () => {
       providerRef.current?.abort();
+      providerRef.current = null;
     };
-  }, [wireCallbacks]);
+  }, []);
 
   const isSupported =
     typeof window !== "undefined" &&
@@ -148,38 +119,100 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
 
   const permissionDenied = state === "permission_denied";
 
-  const startRecording = useCallback(() => {
-    // Reset all state for a clean new session
+  /**
+   * Start recording — LAZY init: tries AssemblyAI on every call.
+   * If AssemblyAI token unavailable, falls back to browser speech.
+   */
+  const startRecording = useCallback(async () => {
+    // Reset state for clean new session
     setError(null);
     setInterimTranscript("");
     committedSegmentsRef.current = [];
     setTranscript("");
+    setState("processing");
 
     // Generate new session ID
     const newSessionId = crypto.randomUUID();
     sessionIdRef.current = newSessionId;
 
-    if (!providerRef.current) {
-      // Last resort — create a new browser provider
+    // Abort any existing provider first
+    if (providerRef.current) {
+      providerRef.current.abort();
+      providerRef.current = null;
+    }
+
+    // Try AssemblyAI — check token availability first (fast HEAD check)
+    let useAssemblyAI = false;
+    try {
+      const tokenRes = await fetch("/api/speech/token", {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (tokenRes.ok) {
+        const tokenData = await tokenRes.json();
+        if (tokenData.token) {
+          useAssemblyAI = true;
+        }
+      }
+    } catch {
+      // Token endpoint unavailable — will use browser speech
+      console.log("[Speech] AssemblyAI token unavailable, using browser speech");
+    }
+
+    // Check if session was cancelled during the async token check
+    if (sessionIdRef.current !== newSessionId) {
+      setState("idle");
+      return;
+    }
+
+    if (useAssemblyAI) {
+      // Use AssemblyAI — dynamic import to avoid loading on non-supported browsers
+      try {
+        const { AssemblyAiProvider } = await import("./assembly-ai-provider");
+        const provider = new AssemblyAiProvider();
+        wireCallbacks(provider);
+        providerRef.current = provider;
+        setProviderName("assemblyai");
+
+        // Check session again after dynamic import
+        if (sessionIdRef.current !== newSessionId) {
+          setState("idle");
+          return;
+        }
+
+        await provider.start({ language, continuous: true, interimResults: true });
+        // After start(), the provider's sessionId is set internally.
+        // Update our ref to match so callbacks are validated correctly.
+        sessionIdRef.current = provider.sessionId;
+      } catch (importErr) {
+        console.error("[Speech] AssemblyAI import/start failed:", importErr);
+        // Fall through to browser speech
+        useAssemblyAI = false;
+      }
+    }
+
+    if (!useAssemblyAI) {
+      // Fallback: Browser Web Speech API
       const browser = new BrowserSpeechProvider();
       wireCallbacks(browser);
       providerRef.current = browser;
       setProviderName("browser");
-    }
 
-    providerRef.current.start({
-      language,
-      continuous: true,
-      interimResults: true,
-    });
+      if (!browser.isSupported) {
+        setError(
+          "Voice input is not supported in this browser. Please type your report instead."
+        );
+        setState("error");
+        return;
+      }
+
+      browser.start({ language, continuous: true, interimResults: true });
+      sessionIdRef.current = browser.sessionId;
+    }
   }, [language, wireCallbacks]);
 
   const stopRecording = useCallback(() => {
     providerRef.current?.stop();
     setInterimTranscript("");
-
-    // Final transcript is already built from committed segments
-    // No additional processing needed
   }, []);
 
   const resetTranscript = useCallback(() => {

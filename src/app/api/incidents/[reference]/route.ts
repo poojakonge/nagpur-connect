@@ -104,11 +104,29 @@ export async function GET(
     const incident = incidents[0];
 
     // ── Ownership check ──
-    // Admin can see everything. Citizens can only see their own incidents.
+    // Admin can see everything. Citizens can only see their own reports.
+    // IMPORTANT: A citizen may have TWO valid IDs during a session:
+    //   1. The httpOnly cookie guest_token (set async via register-guest)
+    //   2. The x-guest-id header (from localStorage, the primary source)
+    // Both map to the same human but may have different UUIDs if the cookie
+    // registration hasn't completed yet. We accept EITHER as valid ownership.
     const isAdmin = isAdminRequest(request);
     if (!isAdmin) {
       const identity = await getCitizenIdentity(request);
-      if (!identity || identity.citizenId !== incident.citizen_id) {
+
+      // Build set of all possible IDs for this requester
+      const validIds = new Set<string>();
+      if (identity) validIds.add(identity.citizenId);
+
+      // Also check the raw header ID directly (in case cookie differs)
+      const headerRaw = request.headers.get("x-guest-id");
+      if (headerRaw) validIds.add(`guest_${headerRaw}`);
+
+      // Check the cookie value too
+      const cookieRaw = request.cookies.get("guest_token")?.value;
+      if (cookieRaw) validIds.add(`guest_${cookieRaw}`);
+
+      if (validIds.size === 0 || !validIds.has(incident.citizen_id)) {
         return NextResponse.json(
           { error: { code: "FORBIDDEN", message: "You are not authorized to view this report." } },
           { status: 403 }

@@ -32,17 +32,28 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const citizenId = identity.citizenId;
+    // Build all possible citizen IDs for this user (cookie vs header may differ)
+    const citizenIds = new Set<string>();
+    citizenIds.add(identity.citizenId);
+
+    const headerRaw = request.headers.get("x-guest-id");
+    if (headerRaw) citizenIds.add(`guest_${headerRaw}`);
+
+    const cookieRaw = request.cookies.get("guest_token")?.value;
+    if (cookieRaw) citizenIds.add(`guest_${cookieRaw}`);
+
+    const idList = Array.from(citizenIds);
+    const placeholders = idList.map(() => "?").join(",");
 
     const incidents = await query<IncidentListRow>(
       `SELECT public_reference, category_slug, status, severity,
               priority_score, title, citizen_summary, location_text,
               created_at, confirmed_at
        FROM incidents
-       WHERE citizen_id = ?
+       WHERE citizen_id IN (${placeholders})
        ORDER BY created_at DESC
        LIMIT 20`,
-      [citizenId]
+      idList
     );
 
     return NextResponse.json({

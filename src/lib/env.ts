@@ -66,9 +66,18 @@ export const env = {
     return process.env["GROQ_LLAMA_API_KEY"] || optionalEnv("GROQ_API_KEY", "");
   },
 
-  /** AssemblyAI API key — stored as "ASSEMBLY_AI_MODEL" in .env.local */
+  /**
+   * AssemblyAI API key.
+   * In .env.local it is stored as "ASSEMBLY_AI_MODEL" (misnamed — it IS the key).
+   * On Vercel, set ASSEMBLYAI_API_KEY (standard) or ASSEMBLY_AI_MODEL.
+   */
   get assemblyAiKey(): string {
-    return process.env["ASSEMBLY_AI_MODEL"] || optionalEnv("ASSEMBLYAI_API_KEY", "");
+    return (
+      process.env["ASSEMBLYAI_API_KEY"] ||       // Standard Vercel env var name
+      process.env["ASSEMBLY_AI_MODEL"] ||         // Local .env.local (misnamed but valid)
+      process.env["ASSEMBLYAI_KEY"] ||            // Alternative
+      ""
+    );
   },
 
   // ─── Session ───

@@ -25,6 +25,7 @@ import { useSpeech } from "@/modules/speech/use-speech";
 import { useIncidentDraft } from "@/modules/incidents/use-incident-draft";
 import { getOrCreateGuestId, citizenHeaders } from "@/lib/guest-id";
 import type { AnalysisResult } from "@/modules/ai/engine";
+import type { AIFinalReport } from "@/modules/ai/groq-provider";
 import type { GeoRoutingResult } from "@/modules/geo/types";
 
 type DashboardView =
@@ -32,9 +33,11 @@ type DashboardView =
   | "composing"
   | "preview"
   | "analyzing"
-  | "mismatch"       // NEW — wrong dept detected
+  | "mismatch"       // wrong dept detected
   | "analysis"       // AI result display
-  | "dept_questions" // NEW — max 4 dept-specific chips
+  | "dept_questions" // max 4 dept-specific chips
+  | "finalizing"     // NEW — calling Stage 3 AI
+  | "final_review"   // NEW — show final report before Proceed
   | "submitting"
   | "success";
 
@@ -65,8 +68,8 @@ export default function CitizenDashboard() {
   const [geoRouting, setGeoRouting] = useState<GeoRoutingResult | null>(null);
   const [activeReports, setActiveReports] = useState<ActiveReport[]>([]);
   const [error, setError] = useState<string | null>(null);
-  // Stores the dept-specific question answers from DeptQuestions component
   const [deptAnswers, setDeptAnswers] = useState<Record<string, string | string[]>>({});
+  const [finalReport, setFinalReport] = useState<AIFinalReport | null>(null);
 
   const speech = useSpeech("en-IN");
   const draft = useIncidentDraft();
@@ -163,6 +166,7 @@ export default function CitizenDashboard() {
     setCreatedIncident(null);
     setGeoRouting(null);
     setDeptAnswers({});
+    setFinalReport(null);
   }, [draft, speech]);
 
   // ── AI Analysis ────────────────────────────────────────
@@ -237,29 +241,90 @@ export default function CitizenDashboard() {
     if (analysisResult.deptQuestions && analysisResult.deptQuestions.length > 0) {
       setView("dept_questions");
     } else {
-      // No questions needed — submit directly
-      handleProceed({});
+      // No questions — go straight to final review with empty answers
+      setView("finalizing");
+      fetch("/api/incidents/finalize", {
+        method: "POST",
+        headers: citizenHeaders(),
+        body: JSON.stringify({
+          originalText: draft.draft.text,
+          analysis: analysisResult,
+          answers: {},
+          locationText: draft.draft.locationText || null,
+        }),
+      })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data?.success && data.finalReport) {
+            setFinalReport(data.finalReport);
+          }
+          setView("final_review");
+        })
+        .catch(() => setView("final_review"));
     }
-  }, [analysisResult]);
+  }, [analysisResult, draft.draft]);
 
-  // ── Submit / PROCEED ──────────────────────────────────
-
-  const handleProceed = useCallback(
+  /**
+   * Called when citizen submits answers from DeptQuestions.
+   * Calls Stage 3 AI to finalize, then shows final review.
+   */
+  const handleAnswersSubmitted = useCallback(
     async (answers: Record<string, string | string[]>) => {
       if (!analysisResult) return;
       setDeptAnswers(answers);
       setError(null);
+      setView("finalizing");
+
+      try {
+        const res = await fetch("/api/incidents/finalize", {
+          method: "POST",
+          headers: citizenHeaders(),
+          body: JSON.stringify({
+            originalText: draft.draft.text,
+            analysis: analysisResult,
+            answers,
+            locationText: draft.draft.locationText || null,
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.finalReport) {
+            setFinalReport(data.finalReport);
+          }
+        }
+        // Even if finalize fails, show the review screen with initial analysis
+        setView("final_review");
+      } catch {
+        // Non-fatal — show review with initial analysis
+        setView("final_review");
+      }
+    },
+    [analysisResult, draft.draft]
+  );
+
+  /**
+   * Called when citizen presses "Submit Report" on the final_review screen.
+   * Actually persists the incident to TiDB.
+   */
+  const handleProceed = useCallback(
+    async (answers: Record<string, string | string[]>) => {
+      if (!analysisResult) return;
+      const effectiveAnswers = Object.keys(answers).length > 0 ? answers : deptAnswers;
+      setError(null);
       setView("submitting");
 
       try {
-        // Build AI conversation items from questions + answers for persistence
         const aiConversation = analysisResult.deptQuestions
           ?.map((q, idx) => ({
             questionId: q.id,
             questionText: q.question,
             questionType: q.type,
             questionOptions: q.options || null,
-            answerValue: answers[q.id] || "",
+            answerValue: (() => {
+              const raw = effectiveAnswers[q.id];
+              return Array.isArray(raw) ? raw.join(", ") : raw || "";
+            })(),
             required: q.required,
             sortOrder: idx,
           }))
@@ -274,9 +339,10 @@ export default function CitizenDashboard() {
             locationText: draft.draft.locationText || analysisResult.location.text,
             latitude: draft.draft.latitude,
             longitude: draft.draft.longitude,
-            departmentAnswers: answers,
+            departmentAnswers: effectiveAnswers,
             selectedDepartment: draft.draft.selectedCategory || null,
             aiConversation,
+            finalReport: finalReport || null,
           }),
         });
 
@@ -287,21 +353,17 @@ export default function CitizenDashboard() {
 
         const data = await res.json();
         setCreatedIncident(data.incident);
-        // Store geo routing result if returned
-        if (data.geoRouting) {
-          setGeoRouting(data.geoRouting);
-        }
+        if (data.geoRouting) setGeoRouting(data.geoRouting);
         setView("success");
         fetchActiveReports();
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to submit report. Please try again."
-        );
-        setView("dept_questions");
+        setError(err instanceof Error ? err.message : "Failed to submit report. Please try again.");
+        setView("final_review");
       }
     },
-    [analysisResult, draft.draft]
+    [analysisResult, draft.draft, deptAnswers, finalReport]
   );
+
 
   // ── Photo handling ─────────────────────────────────────
 
@@ -441,7 +503,7 @@ export default function CitizenDashboard() {
             <CategoryGrid onSelect={(slug) => startComposing("category", slug)} />
 
             {/* Bottom input bar */}
-            <div className="fixed bottom-0 left-0 right-0 bg-surface-0/95 backdrop-blur-xl border-t border-border px-4 py-3 z-50">
+            <div className="fixed bottom-0 left-0 right-0 bg-surface-0/95 backdrop-blur-xl border-t border-border px-4 py-3 z-50" style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom))' }}>
               <div className="max-w-lg mx-auto flex items-center gap-3">
                 <button
                   onClick={() => startComposing("text")}
@@ -678,9 +740,138 @@ export default function CitizenDashboard() {
         {view === "dept_questions" && analysisResult && (
           <DeptQuestions
             analysis={analysisResult}
-            onSubmit={handleProceed}
+            onSubmit={handleAnswersSubmitted}
             onBack={() => setView("analysis")}
           />
+        )}
+
+        {/* ═══ FINALIZING VIEW ═══ */}
+        {view === "finalizing" && (
+          <div className="flex flex-col items-center justify-center py-16 fade-in">
+            <div className="w-16 h-16 rounded-full bg-accent/10 flex items-center justify-center mb-4">
+              <svg className="animate-spin" width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="var(--color-accent)" strokeWidth="4" />
+                <path className="opacity-75" fill="var(--color-accent)" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+              </svg>
+            </div>
+            <h2 className="text-lg font-bold text-text-primary mb-1">Generating Final Report</h2>
+            <p className="text-sm text-text-tertiary">AI is summarizing your answers...</p>
+            <p className="text-xs text-text-tertiary mt-1 opacity-60">Stage 3 — takes ~2–3 seconds</p>
+          </div>
+        )}
+
+        {/* ═══ FINAL REVIEW VIEW ═══ */}
+        {view === "final_review" && analysisResult && (
+          <div className="space-y-4 fade-in">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setView("dept_questions")}
+                className="w-9 h-9 rounded-full hover:bg-surface-2 flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+              </button>
+              <h2 className="text-lg font-bold text-text-primary">Your Report Summary</h2>
+            </div>
+
+            {/* Final report card */}
+            <div className="bg-surface-0 border border-border rounded-2xl p-4 shadow-sm space-y-3">
+              {/* Severity + priority */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${
+                  (finalReport?.severity || analysisResult.severity.level) === "critical" ? "bg-critical-bg text-critical" :
+                  (finalReport?.severity || analysisResult.severity.level) === "high" ? "bg-high-bg text-high" :
+                  (finalReport?.severity || analysisResult.severity.level) === "medium" ? "bg-medium-bg text-medium" :
+                  "bg-low-bg text-low"
+                }`}>
+                  {(finalReport?.severity || analysisResult.severity.level).toUpperCase()}
+                </span>
+                <span className="text-xs text-text-tertiary">
+                  Priority: {finalReport?.priorityScore ?? analysisResult.priority.score}/100
+                </span>
+                {(finalReport?.affectedPeople ?? analysisResult.affectedPeople) && (
+                  <span className="text-xs text-text-tertiary">
+                    {finalReport?.affectedPeople ?? analysisResult.affectedPeople} affected
+                  </span>
+                )}
+              </div>
+
+              {/* Summary */}
+              <p className="text-sm text-text-primary leading-relaxed">
+                {finalReport?.finalSummary || analysisResult.summary}
+              </p>
+
+              {/* Key findings */}
+              {finalReport && finalReport.keyFindings.length > 0 && (
+                <div className="pt-3 border-t border-border">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-text-tertiary mb-2">Key Findings</p>
+                  <ul className="space-y-1.5">
+                    {finalReport.keyFindings.map((f, i) => (
+                      <li key={i} className="flex items-start gap-2 text-xs text-text-secondary">
+                        <span className="text-accent mt-0.5 flex-shrink-0">•</span>
+                        <span>{f}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Recommended actions */}
+              {finalReport && finalReport.recommendedActions.length > 0 && (
+                <div className="pt-3 border-t border-border">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-text-tertiary mb-2">What Happens Next</p>
+                  <ul className="space-y-1.5">
+                    {finalReport.recommendedActions.map((a, i) => (
+                      <li key={i} className="flex items-start gap-2 text-xs text-text-secondary">
+                        <span className="text-success mt-0.5 flex-shrink-0">→</span>
+                        <span>{a}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Departments */}
+              {analysisResult.departments.length > 0 && (
+                <div className="pt-3 border-t border-border">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-text-tertiary mb-2">Notifying</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {analysisResult.departments.map((d) => (
+                      <span key={d.code} className="text-[10px] px-2 py-0.5 bg-accent/10 text-accent rounded-full font-medium">
+                        {d.name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Emergency notice */}
+            {analysisResult.isEmergency && (
+              <div className="bg-critical-bg border border-critical-border rounded-xl p-3.5 flex items-center gap-3">
+                <span className="text-xl">🚨</span>
+                <div>
+                  <p className="text-sm font-bold text-critical">Emergency Flagged</p>
+                  <p className="text-xs text-text-secondary">Priority response will be triggered.</p>
+                </div>
+              </div>
+            )}
+
+            {/* Blue PROCEED button */}
+            <button
+              onClick={() => handleProceed(deptAnswers)}
+              className="w-full py-4 bg-accent text-white rounded-full text-base font-bold hover:bg-accent-hover transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg active:scale-95"
+            >
+              Submit Report
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M5 12h14M12 5l7 7-7 7" />
+              </svg>
+            </button>
+            <p className="text-center text-xs text-text-tertiary">
+              Your report will be saved and departments will be notified
+            </p>
+          </div>
         )}
 
         {/* ═══ SUBMITTING VIEW ═══ */}
@@ -696,6 +887,7 @@ export default function CitizenDashboard() {
             <p className="text-sm text-text-tertiary">Saving to database...</p>
           </div>
         )}
+
 
         {/* ═══ SUCCESS VIEW ═══ */}
         {view === "success" && createdIncident && (
