@@ -21,37 +21,14 @@ import {
 
 const MAX_RECORDING_MS = 60_000;
 
-/**
- * Detect the best supported audio MIME type for this browser.
- * "audio/webm;codecs=pcm" fails silently on iOS/Android Chrome.
- * We must probe what the browser actually supports.
- */
-function getSupportedMimeType(): string {
-  if (typeof MediaRecorder === "undefined") return "audio/webm";
-
-  const candidates = [
-    "audio/webm;codecs=pcm",   // Chrome desktop only
-    "audio/webm;codecs=opus",  // Chrome desktop + Android
-    "audio/webm",              // Generic WebM
-    "audio/ogg;codecs=opus",   // Firefox
-    "audio/mp4",               // iOS Safari (partial)
-  ];
-
-  for (const mime of candidates) {
-    if (MediaRecorder.isTypeSupported(mime)) {
-      console.log(`[Speech] Using MIME type: ${mime}`);
-      return mime;
-    }
-  }
-
-  console.warn("[Speech] No preferred MIME type supported, using audio/webm");
-  return "audio/webm";
-}
-
 export class AssemblyAiProvider implements ClientSpeechProvider {
   readonly name = "assemblyai";
   private transcriber: RealtimeTranscriber | null = null;
-  private mediaRecorder: MediaRecorder | null = null;
+  
+  // Audio pipeline for raw PCM16
+  private audioContext: AudioContext | null = null;
+  private processor: ScriptProcessorNode | null = null;
+  private gainNode: GainNode | null = null;
   private micStream: MediaStream | null = null;
   private isActive = false;
   private timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -231,28 +208,46 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
       }
 
       // ── Step 4: Start recording audio ─────────────────
-      // Detect the best supported MIME type at runtime
-      const mimeType = getSupportedMimeType();
+      // AssemblyAI Real-Time API strictly expects raw PCM16 (16-bit signed, little-endian, 16kHz, mono).
+      // MediaRecorder outputs WebM/Opus which AssemblyAI rejects/closes.
+      // We use AudioContext to extract raw PCM.
 
-      this.mediaRecorder = new MediaRecorder(this.micStream, {
-        mimeType: mimeType,
-      });
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      this.audioContext = new AudioContextClass({ sampleRate: 16000 });
 
-      this.mediaRecorder.ondataavailable = async (event) => {
+      const source = this.audioContext.createMediaStreamSource(this.micStream);
+      
+      // 4096 buffer size = ~256ms of audio at 16kHz
+      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+      
+      this.processor.onaudioprocess = (e) => {
         if (this.sessionId !== currentSessionId || !this.transcriber) return;
-        if (event.data.size === 0) return;
+        
+        const inputData = e.inputBuffer.getChannelData(0);
+        const pcm16 = new Int16Array(inputData.length);
+        
+        // Convert Float32 to Int16
+        for (let i = 0; i < inputData.length; i++) {
+          const s = Math.max(-1, Math.min(1, inputData[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        
         try {
-          const buffer = await event.data.arrayBuffer();
-          if (buffer.byteLength > 0) {
-            this.transcriber.sendAudio(buffer);
-          }
+          this.transcriber.sendAudio(pcm16.buffer);
         } catch {
           // WebSocket may have closed — ignore
         }
       };
 
-      // Send chunks every 250ms
-      this.mediaRecorder.start(250);
+      // Connect nodes safely. 
+      // To ensure onaudioprocess fires on Safari, processor must connect to destination.
+      // We use a GainNode with gain=0 to prevent the microphone from echoing out the speakers.
+      this.gainNode = this.audioContext.createGain();
+      this.gainNode.gain.value = 0;
+      
+      source.connect(this.processor);
+      this.processor.connect(this.gainNode);
+      this.gainNode.connect(this.audioContext.destination);
 
       // ── Step 5: Auto-stop safety timer ────────────────
       this.timeoutId = setTimeout(() => {
@@ -279,9 +274,8 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
 
     if (!this.isActive) return;
 
-    if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
-      this.mediaRecorder.stop();
-      // Give 800ms for final audio to be sent and transcribed
+    if (this.audioContext && this.audioContext.state !== "closed") {
+      // Allow final audio chunk to process before full cleanup
       setTimeout(() => this.cleanupAsync(), 800);
     } else {
       this.cleanupAsync();
@@ -301,14 +295,20 @@ export class AssemblyAiProvider implements ClientSpeechProvider {
     this.sessionId = null;
     this.lastFinalText = "";
 
-    // Stop recorder first (stop sending audio)
-    if (this.mediaRecorder) {
-      try {
-        if (this.mediaRecorder.state !== "inactive") {
-          this.mediaRecorder.stop();
-        }
-      } catch { /* ignore */ }
-      this.mediaRecorder = null;
+    // Disconnect Web Audio API nodes
+    if (this.processor) {
+      try { this.processor.disconnect(); } catch { /* ignore */ }
+      this.processor = null;
+    }
+    
+    if (this.gainNode) {
+      try { this.gainNode.disconnect(); } catch { /* ignore */ }
+      this.gainNode = null;
+    }
+
+    if (this.audioContext) {
+      try { this.audioContext.close(); } catch { /* ignore */ }
+      this.audioContext = null;
     }
 
     // Release microphone
