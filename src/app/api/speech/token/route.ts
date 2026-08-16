@@ -1,7 +1,7 @@
 /* ════════════════════════════════════════════════════════
-   AssemblyAI Token Endpoint
-   Generates a short-lived temporary token for the client.
-   Falls back gracefully if the API key is invalid.
+   AssemblyAI Token Endpoint — Streaming v3
+   Generates a short-lived temporary token for the client
+   using the v3 Streaming API endpoint.
    ════════════════════════════════════════════════════════ */
 
 import { NextResponse } from "next/server";
@@ -17,20 +17,23 @@ export async function GET() {
       );
     }
 
-    // Use the REST API directly to create a temporary token
-    // This avoids importing the full AssemblyAI SDK on the server
-    const res = await fetch("https://api.assemblyai.com/v2/realtime/token", {
-      method: "POST",
-      headers: {
-        "Authorization": apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ expires_in: 300 }),
-    });
+    // Use the v3 Streaming API to create a temporary token
+    // expires_in is in seconds; 300 = 5 minutes
+    const res = await fetch(
+      "https://api.assemblyai.com/v3/token?expires_in=300",
+      {
+        method: "GET",
+        headers: {
+          Authorization: apiKey,
+        },
+      }
+    );
 
     if (!res.ok) {
       const errorText = await res.text().catch(() => "Unknown error");
-      console.error(`[Speech API] AssemblyAI token request failed (${res.status}): ${errorText}`);
+      console.error(
+        `[Speech API] AssemblyAI v3 token request failed (${res.status}): ${errorText}`
+      );
       return NextResponse.json(
         { error: "Speech service unavailable", fallback: true },
         { status: 503 }
