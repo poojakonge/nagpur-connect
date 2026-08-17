@@ -23,67 +23,23 @@ import {
 import L from "leaflet";
 import Link from "next/link";
 
-/* ─── Nagpur Coordinates & Bounding Box (1.5x City Area) ─── */
-export const NAGPUR_CENTER: [number, number] = [21.1458, 79.0882];
+import {
+  NAGPUR_CENTER,
+  NAGPUR_BOUNDS,
+  type IncidentMarkerData,
+  type FacilityMarkerData,
+  type ZoneData,
+  type OsmIncidentMapProps,
+} from "./osm-map-types";
 
-// 1.5x buffer strictly containing Nagpur City & Metro Jurisdiction
-export const NAGPUR_BOUNDS: [[number, number], [number, number]] = [
-  [20.8500, 78.7500], // South-West
-  [21.4500, 79.4500], // North-East
-];
-
-export interface IncidentMarkerData {
-  id: string;
-  publicReference: string;
-  title: string | null;
-  severity: string | null;
-  status: string;
-  category: string | null;
-  latitude: number;
-  longitude: number;
-  isEmergency: boolean;
-  createdAt: string;
-  departments: string[];
-}
-
-export interface FacilityMarkerData {
-  id: string;
-  name: string;
-  departmentType: string;
-  departmentName: string;
-  facilityType: string;
-  latitude: number;
-  longitude: number;
-  address?: string;
-  zone?: string;
-  contactNumber?: string;
-  emergencyNumber?: string;
-}
-
-export interface ZoneData {
-  id: string;
-  zoneName: string;
-  zoneNumber: number;
-  areaSqKm: number;
-  polygon: [number, number][];
-  keyLocalities: string[];
-}
-
-export interface OsmIncidentMapProps {
-  tileUrl: string;
-  attribution: string;
-  incidents: IncidentMarkerData[];
-  facilities: FacilityMarkerData[];
-  zones: ZoneData[];
-  showIncidents: boolean;
-  showFacilities: boolean;
-  showZones: boolean;
-  severityFilter: string;
-  statusFilter: string;
-  departmentFilter: string;
-  selectedCoordinates?: [number, number] | null;
-  onResetToNagpur?: () => void;
-}
+export {
+  NAGPUR_CENTER,
+  NAGPUR_BOUNDS,
+  type IncidentMarkerData,
+  type FacilityMarkerData,
+  type ZoneData,
+  type OsmIncidentMapProps,
+};
 
 /* ─── Severity Color Palette ─── */
 const SEVERITY_COLORS: Record<string, { bg: string; border: string; glow: string; text: string }> = {

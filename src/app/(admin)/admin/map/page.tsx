@@ -17,7 +17,7 @@ import {
   type IncidentMarkerData,
   type FacilityMarkerData,
   type ZoneData,
-} from "@/components/admin/osm-incident-map";
+} from "@/components/admin/osm-map-types";
 
 // Dynamic import with SSR disabled to prevent Leaflet window errors
 const OsmIncidentMap = dynamic(
