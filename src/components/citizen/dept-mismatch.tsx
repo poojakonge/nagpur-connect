@@ -8,6 +8,7 @@
 
 import React from "react";
 import { CATEGORIES } from "@/modules/incidents/category-taxonomy";
+import { DEPARTMENTS, getDepartmentByCode } from "@/modules/ai/department-routing";
 import type { AnalysisResult } from "@/modules/ai/engine";
 
 interface DeptMismatchProps {
@@ -18,17 +19,6 @@ interface DeptMismatchProps {
   onBack: () => void;
 }
 
-const DEPT_ICONS: Record<string, string> = {
-  emergency: "🚨",
-  police_safety: "🛡️",
-  fire_rescue: "🔥",
-  health_medical: "🏥",
-  water_drainage: "💧",
-  roads_traffic: "🚗",
-  waste_cleanliness: "🗑️",
-  environment: "🌿",
-};
-
 export function DeptMismatch({
   analysis,
   selectedDepartmentSlug,
@@ -36,13 +26,18 @@ export function DeptMismatch({
   onOverride,
   onBack,
 }: DeptMismatchProps) {
+  const selectedDept = getDepartmentByCode(selectedDepartmentSlug);
   const selectedCat = CATEGORIES.find((c) => c.slug === selectedDepartmentSlug);
+
+  const suggestedDept = analysis.suggestedCategory
+    ? getDepartmentByCode(analysis.suggestedCategory)
+    : null;
   const suggestedCat = CATEGORIES.find((c) => c.slug === analysis.suggestedCategory);
 
-  const selectedName = selectedCat?.name || selectedDepartmentSlug;
-  const suggestedName = analysis.suggestedCategoryName || suggestedCat?.name || analysis.suggestedCategory || "Another Department";
-  const suggestedIcon = DEPT_ICONS[analysis.suggestedCategory || ""] || "📋";
-  const selectedIcon = DEPT_ICONS[selectedDepartmentSlug] || "📋";
+  const selectedName = selectedDept?.name || selectedCat?.name || selectedDepartmentSlug;
+  const suggestedName = analysis.suggestedCategoryName || suggestedDept?.name || suggestedCat?.name || analysis.suggestedCategory || "Suggested Department";
+  const selectedIcon = selectedDept?.icon || selectedCat?.icon || "📋";
+  const suggestedIcon = suggestedDept?.icon || suggestedCat?.icon || "📋";
 
   return (
     <div className="space-y-5 fade-in">

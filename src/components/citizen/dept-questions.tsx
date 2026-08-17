@@ -9,7 +9,7 @@
 
 import React, { useState } from "react";
 import type { AnalysisResult, DeptQuestion } from "@/modules/ai/engine";
-import { getDeptConfig } from "@/modules/incidents/dept-params";
+import { DEPARTMENTS } from "@/modules/ai/department-routing";
 
 interface DeptQuestionsProps {
   analysis: AnalysisResult;
@@ -29,7 +29,7 @@ export function DeptQuestions({ analysis, onSubmit, onBack }: DeptQuestionsProps
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const questions: DeptQuestion[] = analysis.deptQuestions || [];
-  const deptConfig = getDeptConfig(analysis.mainCategory);
+  const deptInfo = DEPARTMENTS.find((d) => d.code === analysis.mainCategory) || DEPARTMENTS[0];
   const severityColors = SEVERITY_COLORS[analysis.severity.level] || SEVERITY_COLORS.medium;
 
   const setChipAnswer = (id: string, value: string) => {
@@ -88,7 +88,7 @@ export function DeptQuestions({ analysis, onSubmit, onBack }: DeptQuestionsProps
           <div className="flex-1">
             {/* Dept + category badge row */}
             <div className="flex items-center gap-2 flex-wrap mb-2">
-              <span className="text-base">{deptConfig?.icon || "📋"}</span>
+              <span className="text-base">{deptInfo?.icon || "📋"}</span>
               <span className="px-2.5 py-1 rounded-full bg-accent/10 text-accent text-[11px] font-bold">
                 {analysis.mainCategoryName}
               </span>

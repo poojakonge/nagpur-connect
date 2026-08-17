@@ -89,6 +89,12 @@ async function linkGuestToGoogle(guestCitizenId: string, googleId: string): Prom
       [googleCitizenId, guestCitizenId]
     );
 
+    // Update push subscriptions
+    await execute(
+      `UPDATE push_subscriptions SET citizen_id = ? WHERE citizen_id = ?`,
+      [googleCitizenId, guestCitizenId]
+    );
+
     console.log(`[Auth] Linked guest ${guestCitizenId} → ${googleCitizenId}`);
   } catch (err) {
     console.warn("[Auth] Failed to link guest to Google:", err);

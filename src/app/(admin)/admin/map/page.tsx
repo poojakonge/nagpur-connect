@@ -1,104 +1,115 @@
 /* ════════════════════════════════════════════════════════
-   Admin Incident Map — Real Data
-   - Real incidents from TiDB (with lat/lng) as severity markers
-   - 178 GeoJSON facilities as department markers
-   - 10 NMC zone boundaries as polygons
-   - Style switcher: Streets | Satellite | Topo | Monochrome
+   Admin Incident & Facilities Map — OpenStreetMap (OSM)
+   - Constrained strictly to Nagpur (1.5x Metro Jurisdiction)
+   - Default Nagpur Center (21.1458° N, 79.0882° E)
+   - Live incident triage markers from TiDB
+   - 178 Municipal GeoJSON facilities & 10 NMC zone polygons
+   - Rich interactive legends, search flight, and quick locality navigation
    ════════════════════════════════════════════════════════ */
 
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import Map, {
-  Marker,
-  NavigationControl,
-  ScaleControl,
-  Popup,
-  Source,
-  Layer,
-} from "react-map-gl/maplibre";
-import "maplibre-gl/dist/maplibre-gl.css";
-import Link from "next/link";
+import React, { useState, useEffect, useMemo } from "react";
+import dynamic from "next/dynamic";
+import { SearchIcon, MapIcon, ShieldIcon, BuildingIcon } from "@/components/ui/icons";
+import {
+  NAGPUR_CENTER,
+  type IncidentMarkerData,
+  type FacilityMarkerData,
+  type ZoneData,
+} from "@/components/admin/osm-incident-map";
 
-/* ─── Map styles ─── */
-const API_KEY = process.env.NEXT_PUBLIC_MAPTILER_API_KEY ?? "";
+// Dynamic import with SSR disabled to prevent Leaflet window errors
+const OsmIncidentMap = dynamic(
+  () => import("@/components/admin/osm-incident-map"),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="w-full h-full flex flex-col items-center justify-center bg-surface-1">
+        <div className="w-10 h-10 border-3 border-accent border-t-transparent rounded-full animate-spin mb-3" />
+        <p className="text-sm font-bold text-text-primary">Loading Nagpur Incident Map...</p>
+        <p className="text-xs text-text-tertiary">Centering on Nagpur (21.1458° N, 79.0882° E)</p>
+      </div>
+    ),
+  }
+);
 
-const MAP_STYLES = [
-  { id: "streets",   label: "Streets",     icon: "🗺️", url: `https://api.maptiler.com/maps/streets-v2/style.json?key=${API_KEY}` },
-  { id: "satellite", label: "Satellite",   icon: "🛰️", url: `https://api.maptiler.com/maps/satellite/style.json?key=${API_KEY}` },
-  { id: "topo",      label: "Topo",        icon: "⛰️", url: `https://api.maptiler.com/maps/topo-v2/style.json?key=${API_KEY}` },
-  { id: "mono",      label: "Monochrome",  icon: "◑",  url: `https://api.maptiler.com/maps/dataviz-light/style.json?key=${API_KEY}` },
-] as const;
+/* ─── OpenStreetMap Tile Providers ─── */
+const TILE_PROVIDERS = [
+  {
+    id: "osm",
+    label: "OpenStreetMap",
+    icon: "🗺️",
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  },
+  {
+    id: "carto-light",
+    label: "Clean Light",
+    icon: "☀️",
+    url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; OpenStreetMap',
+  },
+  {
+    id: "carto-dark",
+    label: "Dark Matter",
+    icon: "🌙",
+    url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; OpenStreetMap',
+  },
+  {
+    id: "satellite",
+    label: "Satellite",
+    icon: "🛰️",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles &copy; Esri, Maxar, Earthstar Geographics",
+  },
+  {
+    id: "topo",
+    label: "Topographic",
+    icon: "⛰️",
+    url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+    attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM',
+  },
+];
 
-const NAGPUR = { longitude: 79.0882, latitude: 21.1458, zoom: 12 };
-
-/* ─── Severity colors ─── */
-const SEVERITY_COLOR: Record<string, string> = {
-  CRITICAL: "#ef4444",
-  HIGH:     "#f97316",
-  MEDIUM:   "#eab308",
-  LOW:      "#22c55e",
-};
-
-/* ─── Department type → color ─── */
-const DEPT_COLOR: Record<string, string> = {
-  police:            "#3b82f6",
-  fire_brigade:      "#ef4444",
-  water_supply:      "#06b6d4",
-  road_maintenance:  "#f59e0b",
-  waste_management:  "#10b981",
-  electricity:       "#8b5cf6",
-  environment:       "#22c55e",
-  traffic_management:"#f97316",
-  municipal_corp:    "#6366f1",
-};
-
-/* ─── Types ─── */
-interface IncidentMarker {
-  id: string;
-  publicReference: string;
-  title: string | null;
-  severity: string | null;
-  status: string;
-  latitude: number;
-  longitude: number;
-  isEmergency: boolean;
-  departments: string[];
-}
-
-interface FacilityMarker {
-  id: string;
-  name: string;
-  departmentType: string;
-  departmentName: string;
-  facilityType: string;
-  latitude: number;
-  longitude: number;
-  address?: string;
-  contactNumber?: string;
-  emergencyNumber?: string;
-}
-
-type ActivePopup =
-  | { kind: "incident"; data: IncidentMarker }
-  | { kind: "facility"; data: FacilityMarker };
-
-type LayerFilter = "incidents" | "facilities" | "all";
+/* ─── Key Nagpur Localities for Quick Jump ─── */
+const NAGPUR_LOCALITIES = [
+  { name: "Zero Mile / Sitabuldi (Center)", coords: [21.1458, 79.0882] as [number, number] },
+  { name: "Dharampeth / Ramdaspeth", coords: [21.1394, 79.0645] as [number, number] },
+  { name: "Sadar / Civil Lines", coords: [21.1610, 79.0805] as [number, number] },
+  { name: "Laxmi Nagar / Bajaj Nagar", coords: [21.1189, 79.0621] as [number, number] },
+  { name: "Wardhaman Nagar / Itwari", coords: [21.1523, 79.1245] as [number, number] },
+  { name: "Medical Square / Hanuman Nagar", coords: [21.1275, 79.0963] as [number, number] },
+  { name: "MIHAN / Nagpur Airport", coords: [21.0592, 79.0558] as [number, number] },
+  { name: "Kalamna / Pardi", coords: [21.1689, 79.1567] as [number, number] },
+];
 
 export default function AdminMapPage() {
-  const [styleId, setStyleId] = useState("streets");
-  const [incidents, setIncidents] = useState<IncidentMarker[]>([]);
-  const [facilities, setFacilities] = useState<FacilityMarker[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState(TILE_PROVIDERS[0]);
+  const [incidents, setIncidents] = useState<IncidentMarkerData[]>([]);
+  const [facilities, setFacilities] = useState<FacilityMarkerData[]>([]);
+  const [zones, setZones] = useState<ZoneData[]>([]);
   const [loading, setLoading] = useState(true);
-  const [popup, setPopup] = useState<ActivePopup | null>(null);
-  const [layerFilter, setLayerFilter] = useState<LayerFilter>("all");
-  const [deptFilter, setDeptFilter] = useState<string>("ALL");
 
-  const currentStyle = MAP_STYLES.find((s) => s.id === styleId)!;
+  // Layer toggles
+  const [showIncidents, setShowIncidents] = useState(true);
+  const [showFacilities, setShowFacilities] = useState(true);
+  const [showZones, setShowZones] = useState(true);
 
-  /* Load real map data */
+  // Filters
+  const [severityFilter, setSeverityFilter] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [departmentFilter, setDepartmentFilter] = useState("ALL");
+
+  // Search & Navigation
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedCoords, setSelectedCoords] = useState<[number, number] | null>(NAGPUR_CENTER);
+  const [showLegend, setShowLegend] = useState(true);
+
+  /* Load map data from /api/admin/map-data */
   useEffect(() => {
-    async function load() {
+    async function loadData() {
       try {
         const res = await fetch("/api/admin/map-data");
         if (res.ok) {
@@ -106,313 +117,358 @@ export default function AdminMapPage() {
           if (data.success) {
             setIncidents(data.incidents || []);
             setFacilities(data.facilities || []);
+            setZones(data.zones || []);
           }
         }
       } catch (err) {
-        console.error("[AdminMap] Failed to load map data:", err);
+        console.error("[AdminMap] Error loading map data:", err);
       } finally {
         setLoading(false);
       }
     }
-    load();
+    loadData();
   }, []);
 
-  /* Derived filtered sets */
-  const visibleIncidents =
-    layerFilter === "facilities" ? [] : incidents;
+  /* Search matching across incidents, facilities and zones */
+  const searchResults = useMemo(() => {
+    if (!searchQuery.trim() || searchQuery.length < 2) return [];
+    const q = searchQuery.toLowerCase();
 
-  const visibleFacilities =
-    layerFilter === "incidents"
-      ? []
-      : deptFilter === "ALL"
-      ? facilities
-      : facilities.filter((f) => f.departmentType === deptFilter);
+    const matchedIncidents = incidents
+      .filter(
+        (i) =>
+          i.publicReference.toLowerCase().includes(q) ||
+          (i.title && i.title.toLowerCase().includes(q))
+      )
+      .slice(0, 4)
+      .map((i) => ({
+        type: "incident" as const,
+        id: i.id,
+        title: i.publicReference,
+        subtitle: i.title || "Reported incident",
+        coords: [i.latitude, i.longitude] as [number, number],
+      }));
 
-  /* Unique department types for filter */
-  const deptTypes = Array.from(new Set(facilities.map((f) => f.departmentType))).sort();
+    const matchedFacilities = facilities
+      .filter((f) => f.name.toLowerCase().includes(q) || f.departmentName.toLowerCase().includes(q))
+      .slice(0, 4)
+      .map((f) => ({
+        type: "facility" as const,
+        id: f.id,
+        title: f.name,
+        subtitle: `${f.departmentName} · ${f.facilityType}`,
+        coords: [f.latitude, f.longitude] as [number, number],
+      }));
+
+    return [...matchedIncidents, ...matchedFacilities];
+  }, [searchQuery, incidents, facilities]);
+
+  // Live Incident Counts
+  const counts = useMemo(() => {
+    let critical = 0;
+    let high = 0;
+    let medium = 0;
+    let low = 0;
+
+    for (const inc of incidents) {
+      const s = inc.severity?.toUpperCase();
+      if (s === "CRITICAL" || inc.isEmergency) critical++;
+      else if (s === "HIGH") high++;
+      else if (s === "MEDIUM") medium++;
+      else if (s === "LOW") low++;
+    }
+
+    return {
+      total: incidents.length,
+      critical,
+      high,
+      medium,
+      low,
+      facilities: facilities.length,
+      zones: zones.length,
+    };
+  }, [incidents, facilities, zones]);
+
+  const handleRecenterNagpur = () => {
+    setSelectedCoords([NAGPUR_CENTER[0] + (Math.random() * 0.00001), NAGPUR_CENTER[1]]);
+  };
 
   return (
-    <div className="h-[calc(100vh-64px)] flex flex-col fade-in">
-      {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-divider bg-surface-0 flex-shrink-0 flex-wrap gap-3">
-        <div>
-          <h1 className="text-base font-bold">Incident & Facilities Map</h1>
-          {!loading && (
-            <p className="text-xs text-text-tertiary">
-              {incidents.length} incidents · {visibleFacilities.length} facilities shown
-            </p>
-          )}
-        </div>
+    <div className="relative w-full h-[calc(100vh-5rem)] flex flex-col overflow-hidden bg-slate-950 rounded-2xl border border-border shadow-2xl">
+      {/* ─── Top Control Bar ─── */}
+      <div className="z-10 bg-surface-0/95 backdrop-blur-md border-b border-border p-3 flex flex-wrap items-center justify-between gap-3 shadow-md">
+        {/* Left: Location Default Value & Search */}
+        <div className="flex items-center gap-3 flex-1 min-w-[280px]">
+          {/* Default Nagpur Location Pill */}
+          <div className="hidden xl:flex items-center gap-2 px-3 py-1.5 bg-accent/10 border border-accent/20 rounded-xl text-xs font-semibold text-accent flex-shrink-0">
+            <span className="animate-pulse">📍</span>
+            <span>Nagpur City Command (21.1458° N, 79.0882° E)</span>
+          </div>
 
-        {/* Layer filter */}
-        <div className="flex items-center gap-2">
-          {(["all", "incidents", "facilities"] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setLayerFilter(f)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition-all cursor-pointer ${
-                layerFilter === f
-                  ? "bg-accent text-white"
-                  : "bg-surface-2 text-text-tertiary hover:bg-surface-3"
-              }`}
-            >
-              {f === "all" ? "All Layers" : f}
-            </button>
-          ))}
-        </div>
+          {/* Search Box */}
+          <div className="relative flex-1 max-w-md">
+            <SearchIcon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search Nagpur incidents (NAG-2026...), facilities, or localities..."
+              className="w-full pl-9 pr-4 py-2 bg-surface-1 border border-border rounded-xl text-xs sm:text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent/40"
+            />
 
-        {/* Department filter (only when facilities visible) */}
-        {layerFilter !== "incidents" && (
+            {/* Live Search Dropdown */}
+            {searchResults.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1.5 bg-surface-0 border border-border rounded-xl shadow-2xl overflow-hidden z-50 divide-y divide-border">
+                {searchResults.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => {
+                      setSelectedCoords(item.coords);
+                      setSearchQuery("");
+                    }}
+                    className="w-full px-4 py-2.5 text-left hover:bg-surface-1 transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <div>
+                      <p className="text-xs font-bold text-text-primary">{item.title}</p>
+                      <p className="text-[11px] text-text-tertiary">{item.subtitle}</p>
+                    </div>
+                    <span className="text-[10px] uppercase font-bold text-accent px-2 py-0.5 bg-accent/10 rounded-full">
+                      {item.type} ↗
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Quick Locality Jump Selector */}
           <select
-            value={deptFilter}
-            onChange={(e) => setDeptFilter(e.target.value)}
-            className="bg-surface-1 border border-border rounded-lg px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent"
+            onChange={(e) => {
+              const idx = parseInt(e.target.value, 10);
+              if (!isNaN(idx) && NAGPUR_LOCALITIES[idx]) {
+                setSelectedCoords(NAGPUR_LOCALITIES[idx].coords);
+              }
+            }}
+            defaultValue=""
+            className="bg-surface-1 border border-border rounded-xl px-3 py-2 text-xs font-semibold text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/40 hidden sm:block"
           >
-            <option value="ALL">All Departments</option>
-            {deptTypes.map((dt) => (
-              <option key={dt} value={dt}>
-                {dt.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+            <option value="" disabled>Jump to Nagpur Locality...</option>
+            {NAGPUR_LOCALITIES.map((loc, idx) => (
+              <option key={loc.name} value={idx}>
+                {loc.name}
               </option>
             ))}
           </select>
-        )}
+        </div>
 
-        {/* Style switcher */}
-        <div className="flex items-center gap-1">
-          {MAP_STYLES.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => setStyleId(s.id)}
-              title={s.label}
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-                styleId === s.id
-                  ? "bg-accent text-white shadow-sm"
-                  : "bg-surface-2 text-text-tertiary hover:bg-surface-3"
-              }`}
-            >
-              {s.icon} {s.label}
-            </button>
-          ))}
+        {/* Right: Tile Switcher & Action Controls */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Tile Selector */}
+          <div className="flex items-center gap-1 bg-surface-1 border border-border p-1 rounded-xl">
+            {TILE_PROVIDERS.map((provider) => (
+              <button
+                key={provider.id}
+                onClick={() => setSelectedProvider(provider)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer flex items-center gap-1 ${
+                  selectedProvider.id === provider.id
+                    ? "bg-accent text-white shadow-sm font-bold"
+                    : "text-text-tertiary hover:text-text-primary"
+                }`}
+                title={provider.label}
+              >
+                <span>{provider.icon}</span>
+                <span className="hidden md:inline">{provider.label}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Recenter on Nagpur */}
+          <button
+            onClick={handleRecenterNagpur}
+            className="px-3 py-2 bg-surface-1 hover:bg-surface-2 border border-border rounded-xl text-xs font-bold text-text-primary transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+            title="Snap back to Nagpur center"
+          >
+            <span>🎯</span>
+            <span className="hidden sm:inline">Center Nagpur</span>
+          </button>
+
+          {/* Toggle Legend Drawer */}
+          <button
+            onClick={() => setShowLegend(!showLegend)}
+            className={`px-3 py-2 border rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm ${
+              showLegend
+                ? "bg-accent text-white border-accent"
+                : "bg-surface-1 text-text-primary border-border hover:bg-surface-2"
+            }`}
+          >
+            <span>📊</span>
+            <span className="hidden sm:inline">Legend</span>
+          </button>
         </div>
       </div>
 
-      {/* Map */}
-      <div className="flex-1 relative">
-        {loading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-canvas/70 z-10">
-            <div className="flex flex-col items-center gap-3">
-              <div className="animate-spin w-8 h-8 border-2 border-accent border-t-transparent rounded-full" />
-              <p className="text-sm text-text-tertiary">Loading map data...</p>
+      {/* ─── Main Map Container ─── */}
+      <div className="relative flex-1 w-full h-full">
+        <OsmIncidentMap
+          tileUrl={selectedProvider.url}
+          attribution={selectedProvider.attribution}
+          incidents={incidents}
+          facilities={facilities}
+          zones={zones}
+          showIncidents={showIncidents}
+          showFacilities={showFacilities}
+          showZones={showZones}
+          severityFilter={severityFilter}
+          statusFilter={statusFilter}
+          departmentFilter={departmentFilter}
+          selectedCoordinates={selectedCoords}
+        />
+
+        {/* ─── Floating Top-Left Layer Filter Pills ─── */}
+        <div className="absolute top-4 left-4 z-10 flex flex-col sm:flex-row items-start sm:items-center gap-2 pointer-events-auto">
+          <div className="bg-surface-0/90 backdrop-blur-md border border-border/80 p-1.5 rounded-2xl shadow-xl flex items-center gap-1 text-xs">
+            <button
+              onClick={() => setShowIncidents(!showIncidents)}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                showIncidents ? "bg-accent text-white shadow-sm" : "text-text-tertiary hover:text-text-primary"
+              }`}
+            >
+              <span>🚨</span>
+              <span>Incidents ({counts.total})</span>
+            </button>
+
+            <button
+              onClick={() => setShowFacilities(!showFacilities)}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                showFacilities ? "bg-accent text-white shadow-sm" : "text-text-tertiary hover:text-text-primary"
+              }`}
+            >
+              <span>🏢</span>
+              <span>Facilities (178)</span>
+            </button>
+
+            <button
+              onClick={() => setShowZones(!showZones)}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                showZones ? "bg-accent text-white shadow-sm" : "text-text-tertiary hover:text-text-primary"
+              }`}
+            >
+              <span>📍</span>
+              <span>10 NMC Zones</span>
+            </button>
+          </div>
+        </div>
+
+        {/* ─── Floating Interactive Legend Panel ─── */}
+        {showLegend && (
+          <div className="absolute bottom-4 right-4 z-10 w-80 max-h-[80%] overflow-y-auto bg-surface-0/95 backdrop-blur-md border border-border rounded-3xl p-4 shadow-2xl space-y-4 animate-fadeIn pointer-events-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-border pb-2.5">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-accent animate-ping" />
+                <h3 className="font-bold text-xs uppercase tracking-wider text-text-primary">
+                  Nagpur Incident Live Triage
+                </h3>
+              </div>
+              <span className="text-[11px] font-mono font-bold text-accent">
+                {counts.total} Reports
+              </span>
+            </div>
+
+            {/* Severity Breakdown */}
+            <div>
+              <p className="text-[10px] uppercase font-bold text-text-tertiary mb-2">Severity Levels</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div
+                  onClick={() => setSeverityFilter(severityFilter === "CRITICAL" ? "ALL" : "CRITICAL")}
+                  className={`p-2 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
+                    severityFilter === "CRITICAL"
+                      ? "bg-red-500/20 border-red-500 text-red-500 font-bold"
+                      : "bg-surface-1 border-border text-text-primary hover:border-red-500/50"
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
+                    <span>Critical</span>
+                  </div>
+                  <span className="text-xs font-bold font-mono">{counts.critical}</span>
+                </div>
+
+                <div
+                  onClick={() => setSeverityFilter(severityFilter === "HIGH" ? "ALL" : "HIGH")}
+                  className={`p-2 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
+                    severityFilter === "HIGH"
+                      ? "bg-orange-500/20 border-orange-500 text-orange-500 font-bold"
+                      : "bg-surface-1 border-border text-text-primary hover:border-orange-500/50"
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="w-2.5 h-2.5 rounded-full bg-orange-500" />
+                    <span>High</span>
+                  </div>
+                  <span className="text-xs font-bold font-mono">{counts.high}</span>
+                </div>
+
+                <div
+                  onClick={() => setSeverityFilter(severityFilter === "MEDIUM" ? "ALL" : "MEDIUM")}
+                  className={`p-2 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
+                    severityFilter === "MEDIUM"
+                      ? "bg-amber-500/20 border-amber-500 text-amber-500 font-bold"
+                      : "bg-surface-1 border-border text-text-primary hover:border-amber-500/50"
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="w-2.5 h-2.5 rounded-full bg-yellow-500" />
+                    <span>Medium</span>
+                  </div>
+                  <span className="text-xs font-bold font-mono">{counts.medium}</span>
+                </div>
+
+                <div
+                  onClick={() => setSeverityFilter(severityFilter === "LOW" ? "ALL" : "LOW")}
+                  className={`p-2 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
+                    severityFilter === "LOW"
+                      ? "bg-green-500/20 border-green-500 text-green-500 font-bold"
+                      : "bg-surface-1 border-border text-text-primary hover:border-green-500/50"
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+                    <span>Low</span>
+                  </div>
+                  <span className="text-xs font-bold font-mono">{counts.low}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Status Filter */}
+            <div className="pt-2 border-t border-border">
+              <p className="text-[10px] uppercase font-bold text-text-tertiary mb-2">Resolution Status</p>
+              <div className="flex gap-2">
+                {["ALL", "ACTIVE", "RESOLVED"].map((status) => (
+                  <button
+                    key={status}
+                    onClick={() => setStatusFilter(status)}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      statusFilter === status
+                        ? "bg-accent text-white"
+                        : "bg-surface-1 text-text-tertiary hover:text-text-primary"
+                    }`}
+                  >
+                    {status}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Geographic Scope Note */}
+            <div className="pt-2 border-t border-border text-[11px] text-text-tertiary flex items-center justify-between">
+              <span>Bounding Box: Nagpur Metro (1.5x)</span>
+              <span className="text-accent font-bold">10 Zones · 178 Hubs</span>
             </div>
           </div>
         )}
-
-        <Map
-          initialViewState={NAGPUR}
-          mapStyle={currentStyle.url}
-          style={{ width: "100%", height: "100%" }}
-          maxBounds={[78.8, 20.9, 79.35, 21.45]}
-          attributionControl={false}
-          onClick={() => setPopup(null)}
-        >
-          <NavigationControl position="top-right" />
-          <ScaleControl position="bottom-right" />
-
-          {/* ─── Incident Markers ─── */}
-          {visibleIncidents.map((inc) => {
-            const color = SEVERITY_COLOR[inc.severity || ""] || "#6b7280";
-            return (
-              <Marker
-                key={`inc-${inc.id}`}
-                latitude={inc.latitude}
-                longitude={inc.longitude}
-                anchor="center"
-                onClick={(e) => {
-                  e.originalEvent.stopPropagation();
-                  setPopup({ kind: "incident", data: inc });
-                }}
-              >
-                <div
-                  title={inc.title || inc.publicReference}
-                  style={{
-                    width: inc.isEmergency ? 22 : 18,
-                    height: inc.isEmergency ? 22 : 18,
-                    borderRadius: "50%",
-                    background: color,
-                    border: `3px solid white`,
-                    boxShadow: `0 0 0 2px ${color}, 0 2px 6px rgba(0,0,0,0.4)`,
-                    cursor: "pointer",
-                    animation: inc.isEmergency ? "pulse-ring 1.5s infinite" : "none",
-                  }}
-                />
-              </Marker>
-            );
-          })}
-
-          {/* ─── Facility Markers ─── */}
-          {visibleFacilities.map((fac) => {
-            const color = DEPT_COLOR[fac.departmentType] || "#6b7280";
-            return (
-              <Marker
-                key={`fac-${fac.id}`}
-                latitude={fac.latitude}
-                longitude={fac.longitude}
-                anchor="center"
-                onClick={(e) => {
-                  e.originalEvent.stopPropagation();
-                  setPopup({ kind: "facility", data: fac });
-                }}
-              >
-                <div
-                  title={fac.name}
-                  style={{
-                    width: 14,
-                    height: 14,
-                    borderRadius: "3px",
-                    background: color,
-                    border: "2px solid white",
-                    boxShadow: `0 1px 4px rgba(0,0,0,0.35)`,
-                    cursor: "pointer",
-                  }}
-                />
-              </Marker>
-            );
-          })}
-
-          {/* ─── Popups ─── */}
-          {popup?.kind === "incident" && (
-            <Popup
-              latitude={popup.data.latitude}
-              longitude={popup.data.longitude}
-              onClose={() => setPopup(null)}
-              closeButton={true}
-              closeOnClick={false}
-              anchor="bottom"
-              maxWidth="280px"
-            >
-              <div className="p-2 space-y-1.5 min-w-[220px]">
-                <div className="flex items-center gap-2">
-                  <span
-                    className="px-2 py-0.5 rounded text-[10px] font-bold text-white"
-                    style={{ background: SEVERITY_COLOR[popup.data.severity || ""] || "#6b7280" }}
-                  >
-                    {popup.data.severity || "—"}
-                  </span>
-                  <span className="text-[10px] font-mono text-gray-500">
-                    {popup.data.publicReference}
-                  </span>
-                  {popup.data.isEmergency && (
-                    <span className="text-[10px] text-red-500 font-bold">🚨</span>
-                  )}
-                </div>
-                <p className="text-sm font-semibold text-gray-800 leading-snug">
-                  {popup.data.title || "Untitled"}
-                </p>
-                {popup.data.departments.length > 0 && (
-                  <p className="text-[11px] text-gray-500">
-                    {popup.data.departments.join(" · ")}
-                  </p>
-                )}
-                <Link
-                  href={`/admin/incidents/${popup.data.publicReference}`}
-                  className="inline-block mt-1 text-[11px] text-blue-600 hover:underline font-medium"
-                  onClick={() => setPopup(null)}
-                >
-                  View full report →
-                </Link>
-              </div>
-            </Popup>
-          )}
-
-          {popup?.kind === "facility" && (
-            <Popup
-              latitude={popup.data.latitude}
-              longitude={popup.data.longitude}
-              onClose={() => setPopup(null)}
-              closeButton={true}
-              closeOnClick={false}
-              anchor="bottom"
-              maxWidth="280px"
-            >
-              <div className="p-2 space-y-1.5 min-w-[200px]">
-                <div className="flex items-center gap-2">
-                  <span
-                    className="w-3 h-3 rounded-sm flex-shrink-0"
-                    style={{ background: DEPT_COLOR[popup.data.departmentType] || "#6b7280" }}
-                  />
-                  <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                    {popup.data.departmentName}
-                  </span>
-                </div>
-                <p className="text-sm font-semibold text-gray-800 leading-snug">
-                  {popup.data.name}
-                </p>
-                <p className="text-[11px] text-gray-400">{popup.data.facilityType}</p>
-                {popup.data.address && (
-                  <p className="text-[11px] text-gray-500 leading-snug">{popup.data.address}</p>
-                )}
-                {popup.data.contactNumber && (
-                  <a
-                    href={`tel:${popup.data.contactNumber.replace(/[^+\d]/g, "")}`}
-                    className="text-[11px] text-blue-600 hover:underline block"
-                  >
-                    📞 {popup.data.contactNumber}
-                  </a>
-                )}
-                {popup.data.emergencyNumber && (
-                  <a
-                    href={`tel:${popup.data.emergencyNumber.split("/")[0].trim().replace(/[^+\d]/g, "")}`}
-                    className="text-[11px] text-red-600 hover:underline font-semibold block"
-                  >
-                    🚨 {popup.data.emergencyNumber}
-                  </a>
-                )}
-              </div>
-            </Popup>
-          )}
-        </Map>
-
-        {/* ─── Legend ─── */}
-        <div className="absolute bottom-8 left-4 bg-surface-0/95 backdrop-blur-md border border-border rounded-xl p-3 shadow-lg text-xs space-y-2 z-10">
-          <p className="font-bold text-text-primary text-[10px] uppercase tracking-wider mb-1">Legend</p>
-
-          {layerFilter !== "facilities" && (
-            <div className="space-y-1">
-              <p className="text-[10px] text-text-tertiary font-semibold">INCIDENTS (circles)</p>
-              {Object.entries(SEVERITY_COLOR).map(([sev, color]) => (
-                <div key={sev} className="flex items-center gap-2">
-                  <div className="w-3.5 h-3.5 rounded-full border-2 border-white" style={{ background: color, boxShadow: `0 0 0 1.5px ${color}` }} />
-                  <span className="text-text-tertiary capitalize">{sev.toLowerCase()}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {layerFilter !== "incidents" && (
-            <div className="space-y-1 mt-1">
-              <p className="text-[10px] text-text-tertiary font-semibold">FACILITIES (squares)</p>
-              {Object.entries(DEPT_COLOR).slice(0, 5).map(([dept, color]) => (
-                <div key={dept} className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-sm border border-white" style={{ background: color }} />
-                  <span className="text-text-tertiary">{dept.replace(/_/g, " ")}</span>
-                </div>
-              ))}
-              {Object.keys(DEPT_COLOR).length > 5 && (
-                <p className="text-[10px] text-text-tertiary">+ {Object.keys(DEPT_COLOR).length - 5} more</p>
-              )}
-            </div>
-          )}
-        </div>
       </div>
-
-      {/* Emergency animation */}
-      <style>{`
-        @keyframes pulse-ring {
-          0%   { box-shadow: 0 0 0 0 rgba(239,68,68,0.7), 0 2px 6px rgba(0,0,0,0.4); }
-          70%  { box-shadow: 0 0 0 8px rgba(239,68,68,0), 0 2px 6px rgba(0,0,0,0.4); }
-          100% { box-shadow: 0 0 0 0 rgba(239,68,68,0), 0 2px 6px rgba(0,0,0,0.4); }
-        }
-      `}</style>
     </div>
   );
 }

@@ -6,6 +6,8 @@
 
 import { execute } from "@/lib/db";
 import { generateULID } from "@/lib/ids";
+import { sendPushNotification } from "@/lib/push-service";
+import { notifyCitizenViaEmail } from "@/lib/email-service";
 
 export type NotificationType =
   | "report_received"
@@ -55,6 +57,18 @@ export async function createNotification(params: CreateNotificationParams): Prom
     // Non-fatal — table may not exist yet
     console.warn("[Notifications] Failed to create notification:", err);
   }
+
+  // If this is a citizen notification, attempt to send a Web Push notification
+  if (params.recipientType === "citizen") {
+    sendPushNotification(params.recipientId, {
+      title: params.title,
+      body: params.message,
+      priority: params.priority || "normal",
+      incidentId: params.incidentId,
+    }).catch((err) => {
+      console.warn("[Notifications] Failed to send push notification:", err);
+    });
+  }
 }
 
 /**
@@ -75,6 +89,12 @@ export async function notifyReportReceived(params: {
     title: "Report Received ✓",
     message: `Your report "${params.title}" (${params.publicReference}) has been received and is being processed.`,
   });
+
+  notifyCitizenViaEmail(params.citizenId, {
+    title: params.title,
+    publicReference: params.publicReference,
+    statusText: "Report Received & AI Analyzed",
+  }).catch(() => {});
 }
 
 /**
@@ -85,6 +105,7 @@ export async function notifyStatusChange(params: {
   incidentId: string;
   publicReference: string;
   newStatus: string;
+  title?: string;
   reason?: string;
 }): Promise<void> {
   const statusNames: Record<string, string> = {
@@ -107,6 +128,13 @@ export async function notifyStatusChange(params: {
     title: `Report Update: ${params.publicReference}`,
     message: `Your report has been ${statusText}.${params.reason ? ` Note: ${params.reason}` : ""}`,
   });
+
+  notifyCitizenViaEmail(params.citizenId, {
+    title: params.title || `Incident ${params.publicReference}`,
+    publicReference: params.publicReference,
+    statusText: statusText.toUpperCase(),
+    reason: params.reason,
+  }).catch(() => {});
 }
 
 /**

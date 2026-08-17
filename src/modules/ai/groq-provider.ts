@@ -1,15 +1,14 @@
 /* ════════════════════════════════════════════════════════
    Groq AI Incident Analysis Provider
-   Uses Groq Llama API — returns structured JSON
-   Stage 1: Full analysis + department mismatch detection
-   Stage 2: Department-specific questions (lightweight)
+   Uses Groq API with robust model fallback — returns structured JSON
+   Stage 1: Full analysis + 17-department mismatch detection
+   Stage 2: Department-specific questions (including mandatory Phone Number)
    Stage 3: Final report synthesis incorporating answers
    ════════════════════════════════════════════════════════ */
 
 import Groq from "groq-sdk";
 import { env } from "@/lib/env";
-import { CATEGORIES } from "@/modules/incidents/category-taxonomy";
-import { getDeptConfig } from "@/modules/incidents/dept-params";
+import { DEPARTMENTS, getDepartmentByCode, type DepartmentInfo } from "./department-routing";
 
 /** Raw AI output schema — what Stage 1 LLM returns */
 export interface AIRawAnalysis {
@@ -79,101 +78,234 @@ export interface AIFinalReport {
   urgencyReason: string;
 }
 
-function buildCategoryReference(): string {
-  return CATEGORIES.map((c) => {
-    const subs = c.subcategories.map((s) => `      - ${s.slug}: ${s.name}`).join("\n");
-    return `  ${c.slug}: ${c.name}\n${subs}`;
+/** Detailed scope description for all 17 departments */
+const DEPARTMENT_DEFINITIONS: Record<string, {
+  name: string;
+  icon: string;
+  scope: string;
+  keywords: string[];
+  criticalParams: string[];
+  notInScope: string;
+}> = {
+  police: {
+    name: "Police Department",
+    icon: "🛡️",
+    scope: "Law enforcement, crimes, theft, robbery, assault, violence, harassment, cyber crime, public disturbance, missing persons, suspicious activity, law & order.",
+    keywords: ["theft", "stolen", "robbery", "assault", "fight", "harassment", "cyber crime", "scam", "fraud", "missing person", "drunk", "violence", "threat"],
+    criticalParams: ["Suspect description", "Time of occurrence", "Weapon involved", "Evidence available"],
+    notInScope: "Traffic signal issues, general road potholes, municipal garbage, street lighting.",
+  },
+  traffic_police: {
+    name: "Traffic Police",
+    icon: "🚦",
+    scope: "Traffic regulation, major traffic congestion, road accidents, reckless driving, illegal parking blocking roads, towing, traffic rule violations.",
+    keywords: ["traffic jam", "accident", "vehicle crash", "reckless driving", "illegal parking", "towing", "road blocked by vehicle", "traffic violation"],
+    criticalParams: ["Vehicle number", "Accident severity", "Traffic blockage extent", "Intersection/road name"],
+    notInScope: "Broken signals (Traffic Management), road potholes (Road Maintenance), non-vehicular crimes.",
+  },
+  fire_brigade: {
+    name: "Fire Brigade",
+    icon: "🔥",
+    scope: "Active fires (buildings, vehicles, commercial), smoke, cylinder/gas blasts, chemical leaks, structural rescue, water rescue, trapped persons.",
+    keywords: ["fire", "flames", "smoke", "burning", "cylinder blast", "gas leak", "trapped person", "drowning", "building collapse rescue"],
+    criticalParams: ["Fire size/extent", "Trapped individuals", "Hazardous materials/chemicals", "Building type/floors"],
+    notInScope: "Forest fires (co-managed with Forest Dept), non-fire municipal complaints.",
+  },
+  health_dept: {
+    name: "Health Department",
+    icon: "🏥",
+    scope: "Public health, disease outbreaks (dengue, malaria, cholera), contaminated water illness, food safety violations, hospital hygiene, stray animal rabies/bites.",
+    keywords: ["disease outbreak", "dengue", "malaria", "fever", "epidemic", "food poisoning", "unhygienic restaurant", "dog bite", "rabies", "headache", "illness", "health hazard"],
+    criticalParams: ["Number of affected persons", "Symptoms observed", "Facility/establishment name", "Doctor consultation status"],
+    notInScope: "Emergency ambulance transport (Ambulance Services), water pipe repairs (Water Supply).",
+  },
+  ambulance: {
+    name: "Ambulance Services",
+    icon: "🚑",
+    scope: "Emergency medical transport (108 Ambulance), urgent patient transfer, accident trauma care, heart attacks, severe acute injuries, medical emergencies.",
+    keywords: ["ambulance", "medical emergency", "heart attack", "unconscious", "heavy bleeding", "severe pain", "head paining", "critical patient", "trauma"],
+    criticalParams: ["Patient conscious status", "Severity of condition", "Exact pickup landmark", "Oxygen/stretcher required"],
+    notInScope: "Routine clinic complaints, long-term health policy.",
+  },
+  water_supply: {
+    name: "Water Supply Department",
+    icon: "💧",
+    scope: "Municipal drinking water supply, pipeline bursts, low water pressure, no water supply, dirty/muddy tap water, water tanker requests.",
+    keywords: ["no water", "dry tap", "water cut", "pipe burst", "water leak", "muddy water", "low pressure", "drinking water issue"],
+    criticalParams: ["Duration of disruption", "Pipeline location", "Water appearance/smell", "Area/zone affected"],
+    notInScope: "Sewage overflow (Drainage), storm waterlogging (Drainage).",
+  },
+  drainage: {
+    name: "Drainage Department",
+    icon: "🌊",
+    scope: "Stormwater drainage, sewage overflow, blocked gutters/drains, open sewage, foul odor from sewer, monsoon waterlogging.",
+    keywords: ["sewage", "gutter", "drain overflow", "blocked drain", "waterlogging", "stinking sewer", "open nullah", "choked drainage"],
+    criticalParams: ["Drain blockage location", "Sewage entering premises", "Water level depth", "Foul smell intensity"],
+    notInScope: "Drinking water pipeline leak (Water Supply), road potholes (Road Maintenance).",
+  },
+  road_maintenance: {
+    name: "Road Maintenance / PWD",
+    icon: "🛣️",
+    scope: "Potholes, damaged asphalt, road cave-ins, broken road dividers, open manholes on roads, footpath pavement damage, road resurfacing.",
+    keywords: ["pothole", "bad road", "broken road", "crater", "damaged asphalt", "road cave-in", "open manhole cover", "damaged divider"],
+    criticalParams: ["Pothole depth/size", "Road/lane affected", "Accident risk level", "Nearby landmark"],
+    notInScope: "Traffic signals (Traffic Management), illegal parking (Traffic Police).",
+  },
+  traffic_management: {
+    name: "Traffic Management",
+    icon: "🚥",
+    scope: "Traffic signals (broken, non-functional, timing issues), road sign boards, speed breakers, zebra crossings, blinkers, lane markings.",
+    keywords: ["broken traffic light", "signal not working", "traffic signal faulty", "missing sign board", "speed breaker", "zebra crossing", "blinker"],
+    criticalParams: ["Signal junction name", "Malfunction type (dead/stuck red/blinking)", "Traffic congestion impact"],
+    notInScope: "Traffic police deployment, pothole repairs.",
+  },
+  waste_management: {
+    name: "Waste Management",
+    icon: "🗑️",
+    scope: "Solid waste collection, overflowing garbage bins, open dumping, missed door-to-door garbage collection, animal carcass removal, littering.",
+    keywords: ["garbage", "trash", "waste dump", "overflowing bin", "garbage not picked up", "dead animal", "litter", "kachra"],
+    criticalParams: ["Garbage volume/size", "Days uncollected", "Location of bin/pile", "Health hazard risk"],
+    notInScope: "Sewage overflow (Drainage), public toilet cleaning (Municipal Corp).",
+  },
+  environment: {
+    name: "Environmental Department",
+    icon: "🌳",
+    scope: "Air pollution, industrial smoke/fumes, noise pollution (loudspeakers, late-night DJ, construction noise), park maintenance, lake pollution, plastic ban.",
+    keywords: ["air pollution", "smoke", "industrial fumes", "noise pollution", "loudspeaker", "park damage", "lake pollution", "burning plastic"],
+    criticalParams: ["Pollution source", "Time/duration of violation", "Noise level/smoke intensity", "Location/vicinity"],
+    notInScope: "Forest wildlife rescue (Forest Dept), garbage disposal (Waste Management).",
+  },
+  electricity: {
+    name: "Electricity Department",
+    icon: "⚡",
+    scope: "Power outages, blackout, broken live wires, sparking transformer, tilted electric poles, street lights not working, voltage fluctuations.",
+    keywords: ["power cut", "load shedding", "broken electric wire", "live wire", "sparking transformer", "street light not working", "dark street", "electric shock hazard"],
+    criticalParams: ["Live wire hazard status", "Pole/transformer number", "Outage scope (single house vs entire area)", "Sparking/fire risk"],
+    notInScope: "Traffic signal lights (Traffic Management), internal home wiring.",
+  },
+  disaster_management: {
+    name: "Disaster Management",
+    icon: "🚨",
+    scope: "Major natural or man-made disasters, heavy flood crisis, major multi-story building collapse, severe storm/cyclone damage, earthquake relief.",
+    keywords: ["disaster", "major flood", "building collapse", "cyclone", "storm damage", "large scale emergency", "mass rescue", "relief camp"],
+    criticalParams: ["Disaster severity", "Estimated casualties/stranded people", "Evacuation needed", "Access route status"],
+    notInScope: "Routine localized issues like single potholes or street lights.",
+  },
+  municipal_corp: {
+    name: "Municipal Corporation",
+    icon: "🏢",
+    scope: "General municipal services (NMC), public toilets, illegal encroachments on footpaths/public land, property tax issues, civic licenses, birth/death records.",
+    keywords: ["municipal corporation", "NMC", "public toilet dirty", "illegal encroachment", "hawker blocking footpath", "illegal construction", "civic amenities"],
+    criticalParams: ["Encroachment type", "Facility location", "Commercial vs residential area"],
+    notInScope: "Crime/theft (Police), electricity supply (Electricity Dept).",
+  },
+  public_works: {
+    name: "Public Works Department",
+    icon: "🚧",
+    scope: "Major government infrastructure, flyover construction/damage, public bridges, government buildings, large-scale drainage conduits.",
+    keywords: ["flyover damage", "bridge crack", "government building", "PWD road project", "infrastructure structural damage"],
+    criticalParams: ["Structural defect description", "Flyover/bridge name", "Safety threat level"],
+    notInScope: "Local colony street potholes (Road Maintenance), garbage bins (Waste Management).",
+  },
+  forest_wildlife: {
+    name: "Forest & Wildlife Department",
+    icon: "🌲",
+    scope: "Forest conservation, wild animals entering residential areas (leopards, monkeys, wild boars, snakes, deer), illegal tree felling/logging, forest fires, poaching.",
+    keywords: ["wild animal", "leopard", "snake rescue", "monkey menace", "illegal tree cutting", "forest fire", "wildlife conflict", "poaching", "forest reserve"],
+    criticalParams: ["Animal species seen", "Immediate danger to humans", "Last seen location/direction", "Tree felling location"],
+    notInScope: "Stray dogs/cats (Health Dept / NMC), pruned garden branches (Environment / NMC).",
+  },
+  women_child_dev: {
+    name: "Women & Child Development",
+    icon: "👩‍👧",
+    scope: "Women's safety, domestic violence, child protection, child labor, abandoned children, eve teasing, dowry harassment, shelter assistance, women helpline.",
+    keywords: ["domestic violence", "child abuse", "child labor", "eve teasing", "women safety", "dowry", "abandoned child", "women helpline", "distress woman"],
+    criticalParams: ["Immediate physical safety status", "Age of victim/child", "Perpetrator details", "Safe location available"],
+    notInScope: "General financial fraud (Police Cyber Cell), routine road issues.",
+  },
+};
+
+function buildDepartmentTaxonomyReference(): string {
+  return Object.entries(DEPARTMENT_DEFINITIONS).map(([code, def]) => {
+    return `### ${def.icon} ${def.name} (code: "${code}")
+- Scope: ${def.scope}
+- Common Keywords: ${def.keywords.join(", ")}
+- Critical Info Needed: ${def.criticalParams.join(", ")}
+- NOT In Scope: ${def.notInScope}`;
   }).join("\n\n");
 }
 
 function buildDepartmentContext(selectedDepartment: string): string {
-  const cat = CATEGORIES.find((c) => c.slug === selectedDepartment);
-  const deptConfig = getDeptConfig(selectedDepartment);
-  const name = deptConfig?.name || cat?.name || selectedDepartment;
+  const dept = DEPARTMENT_DEFINITIONS[selectedDepartment] || getDepartmentByCode(selectedDepartment);
+  const name = dept?.name || selectedDepartment;
+  const icon = dept ? (dept as any).icon || "📋" : "📋";
 
   return `
-DEPARTMENT CONTEXT (IMPORTANT):
-The citizen manually selected the department: "${name}" (slug: ${selectedDepartment})
+══════════════════════════════════════════════════════════════
+DEPARTMENT MISMATCH EVALUATION (MANDATORY):
+The citizen manually selected the department: "${icon} ${name}" (code: "${selectedDepartment}").
 
-Your FIRST task is to check if this report actually belongs to the "${name}" department.
-
-- If the report IS relevant to "${name}": Set mismatch=false. Analyze ONLY from the "${name}" perspective.
-- If the report is NOT relevant to "${name}": Set mismatch=true, set suggestedCategory to the correct category slug, and set mismatchReason to a plain-language explanation.
-
-Do NOT ask department-specific questions when there is a mismatch. Just identify the correct department.`;
+YOUR TASK:
+1. Carefully compare the citizen's query with the scope of "${name}".
+2. Check if the citizen's query TRULY belongs to "${name}".
+   - If it DOES belong to "${name}":
+     Set "mismatch": false, "suggestedCategory": null, "mismatchReason": null.
+     Set "mainCategory": "${selectedDepartment}".
+   - If it DOES NOT belong to "${name}" (e.g., user selected Electricity but reported a medical issue or garbage):
+     Set "mismatch": true.
+     Set "suggestedCategory": "<exact_correct_department_code_from_the_17_departments>".
+     Set "mismatchReason": "A polite, clear 1-2 sentence message telling the citizen: 'You selected ${name}, but your report regarding [brief issue] falls under [Suggested Department Name]. We recommend routing this to [Suggested Department Name] for faster response.'"
+══════════════════════════════════════════════════════════════`;
 }
 
-const BASE_SYSTEM_PROMPT = `You are the AI engine for "Nagpur Connect", a civic incident management platform for the city of Nagpur, Maharashtra, India.
+const BASE_SYSTEM_PROMPT = `You are the Master AI Engine for "Nagpur Connect" (JanSetu), the civic incident triage and routing system for the city of Nagpur, Maharashtra, India.
 
-Your job: Analyze a citizen's report and return a SINGLE structured JSON response.
+Your mission: Accurately analyze citizen queries, classify them into the correct department out of the 17 city departments, detect department mismatches, assess severity, and formulate follow-up questions.
 
-CATEGORIES AND SUBCATEGORIES:
-${buildCategoryReference()}
+CITY DEPARTMENTS DIRECTORY (Exact 17 Departments):
+${buildDepartmentTaxonomyReference()}
 
-DEPARTMENTS (for routing — use these exact codes):
-- police: Police Department
-- traffic_police: Traffic Police
-- fire_brigade: Fire Brigade
-- health_dept: Health Department
-- ambulance: Ambulance Services
-- water_supply: Water Supply Department
-- drainage: Drainage Department
-- road_maintenance: Road Maintenance/PWD
-- traffic_management: Traffic Management
-- waste_management: Waste Management
-- environment: Environmental Department
-- electricity: Electricity Department
-- disaster_management: Disaster Management
-- municipal_corp: Municipal Corporation (general)
-- public_works: Public Works Department
+SEVERITY CLASSIFICATION:
+- critical: Immediate threat to human life, active disaster, severe fire, major gas leak, live wire on water/ground, acute trauma (score 81-100)
+- high: Significant public hazard, heavy waterlogging, active disease outbreak, burst water main, severe crime (score 61-80)
+- medium: Standard civic issue, non-critical pothole, uncollected garbage, streetlight out, broken signal (score 31-60)
+- low: Minor aesthetic complaint, inquiry, minor noise (score 0-30)
 
-SEVERITY LEVELS:
-- critical: Immediate danger to life, active emergency (score 81-100)
-- high: Significant risk, urgent response needed (score 61-80)
-- medium: Important issue, normal priority (score 31-60)
-- low: Minor inconvenience, can be scheduled (score 0-30)
+RULES FOR INCIDENT ANALYSIS:
+1. Select the BEST primary department code from the 17 codes above for "mainCategory".
+2. One incident CAN route to multiple departments in "requiredDepartments".
+3. Extract specific locations (landmarks, areas in Nagpur like Dharampeth, Sitabuldi, Sadar, Wardha Road, etc.).
+4. If the user query is medical/health-related (e.g. "my head is paining", "fever", "accident"), route to "ambulance" or "health_dept".
+5. Always generate a clear, empathetic 1-2 sentence "summary" for the citizen.
 
-CORE RULES:
-1. One incident CAN require MULTIPLE departments.
-2. A road accident needs: police, traffic_police, ambulance.
-3. Fire needs: fire_brigade, police, ambulance if injuries.
-4. Waterlogging needs: drainage, road_maintenance, traffic_management.
-5. If injuries or danger mentioned, set severity to high or critical.
-6. For sensitive/crime reports, set privacy.level to "restricted" or "sensitive".
-7. Extract location text if mentioned in the report.
-8. Be generous with severity scores for safety-related issues.
-9. NEVER ask for information the citizen already provided in their description.
-10. NEVER ask more than 4 questions total.
-
-You MUST respond with ONLY valid JSON. Use this EXACT schema:
-
+You MUST respond ONLY with a valid JSON object using this EXACT schema:
 {
-  "incidentType": "subcategory_slug",
-  "mainCategory": "category_slug",
-  "subcategory": "subcategory_slug",
-  "summary": "Plain language summary for the citizen (max 200 chars)",
+  "incidentType": "specific_incident_slug (e.g. broken_wire, medical_emergency, pothole)",
+  "mainCategory": "exact_department_code_from_17_departments",
+  "subcategory": "specific_incident_slug",
+  "summary": "Plain language summary for citizen (max 200 chars)",
   "severity": {
     "level": "critical|high|medium|low",
     "score": 0-100,
-    "reason": "Brief reason"
+    "reason": "Brief rationale for severity"
   },
   "affectedPeople": null or number,
   "location": {
     "required": true,
-    "provided": true/false,
-    "text": "Extracted location or null"
+    "provided": true or false,
+    "text": "Extracted location or landmark if mentioned, else null"
   },
   "attachments": {
     "required": false,
-    "recommended": true/false,
-    "reason": "Why a photo would help"
+    "recommended": true or false,
+    "reason": "Why photo helps"
   },
   "privacy": {
     "level": "normal|restricted|sensitive",
     "protectIdentity": false
   },
   "requiredDepartments": [
-    { "departmentType": "department_code", "reason": "Why this department" }
+    { "departmentType": "exact_department_code", "reason": "Why this department" }
   ],
   "confidence": {
     "overall": 0.0-1.0,
@@ -190,14 +322,60 @@ You MUST respond with ONLY valid JSON. Use this EXACT schema:
 export class GroqIncidentAnalysisProvider {
   readonly providerName = "groq";
   private client: Groq;
-  private model = "llama-3.3-70b-versatile";
-  private fastModel = "llama-3.1-8b-instant";
+  
+  // Available fast and versatile chat models on Groq
+  private primaryModels = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.6-27b",
+    "groq/compound",
+  ];
+
+  private fastModels = [
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+    "qwen/qwen3.6-27b",
+    "groq/compound-mini",
+  ];
 
   constructor() {
     this.client = new Groq({ apiKey: env.groqApiKey });
   }
 
-  /** Stage 1 — Full analysis with optional dept context */
+  /**
+   * Safe chat completion with automatic model fallback
+   */
+  private async createCompletionWithFallback(params: {
+    models: string[];
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+    temperature?: number;
+    max_tokens?: number;
+    response_format?: { type: "json_object" };
+  }): Promise<{ content: string; modelUsed: string }> {
+    let lastError: Error | null = null;
+
+    for (const model of params.models) {
+      try {
+        const completion = await this.client.chat.completions.create({
+          model,
+          messages: params.messages,
+          temperature: params.temperature ?? 0.1,
+          max_tokens: params.max_tokens ?? 1500,
+          response_format: params.response_format ?? { type: "json_object" },
+        });
+
+        const content = completion.choices[0]?.message?.content || "{}";
+        return { content, modelUsed: model };
+      } catch (err: any) {
+        console.warn(`[Groq AI] Model ${model} failed (${err.status || err.message}). Trying fallback...`);
+        lastError = err;
+      }
+    }
+
+    throw lastError || new Error("All Groq AI models failed to respond.");
+  }
+
+  /** Stage 1 — Full analysis with 17-department master prompt + mismatch detection */
   async analyze(params: {
     text: string;
     locationContext?: string;
@@ -212,11 +390,11 @@ export class GroqIncidentAnalysisProvider {
 
     let userMessage = `Citizen report: "${params.text}"`;
     if (params.locationContext) {
-      userMessage += `\n\nLocation context: ${params.locationContext}`;
+      userMessage += `\n\nLocation context provided by citizen GPS / text: ${params.locationContext}`;
     }
 
-    const completion = await this.client.chat.completions.create({
-      model: this.model,
+    const { content: rawContent, modelUsed } = await this.createCompletionWithFallback({
+      models: this.primaryModels,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage },
@@ -226,8 +404,12 @@ export class GroqIncidentAnalysisProvider {
       response_format: { type: "json_object" },
     });
 
-    const rawContent = completion.choices[0]?.message?.content || "{}";
-    const analysis = JSON.parse(rawContent) as AIRawAnalysis;
+    let analysis: AIRawAnalysis;
+    try {
+      analysis = JSON.parse(rawContent) as AIRawAnalysis;
+    } catch {
+      throw new Error("Failed to parse AI structured response.");
+    }
 
     if (!analysis.mainCategory || !analysis.summary || !analysis.severity) {
       throw new Error("AI response missing required fields (mainCategory, summary, severity)");
@@ -239,58 +421,83 @@ export class GroqIncidentAnalysisProvider {
 
     return {
       analysis,
-      model: this.model,
+      model: modelUsed,
       processingTimeMs: Date.now() - startTime,
     };
   }
 
   /**
-   * Stage 2 — Generate department-specific questions.
-   * Uses fast model. Already-known info prevents re-asking.
+   * Stage 2 — Generate department-specific questions + MANDATORY phone number.
+   * Tailored strictly to the department and the query.
    */
   async generateDeptQuestions(params: {
     summary: string;
     departmentSlug: string;
     departmentName: string;
-    alreadyKnown: string[];
-    questionPool: Array<{
-      id: string;
-      question: string;
-      type: string;
-      options?: string[];
-      placeholder?: string;
-      required: boolean;
-      skipIfMentioned?: string[];
-    }>;
     originalText: string;
   }): Promise<AIQuestionSet> {
-    const poolJson = JSON.stringify(params.questionPool.slice(0, 8), null, 2);
+    const deptDef = DEPARTMENT_DEFINITIONS[params.departmentSlug];
+    const deptName = deptDef?.name || params.departmentName;
+    const criticalParams = deptDef?.criticalParams.join(", ") || "Specific hazard details";
 
-    const systemPrompt = `You are selecting follow-up questions for a civic incident report.
-Department: ${params.departmentName}
-AI Summary: ${params.summary}
+    const systemPrompt = `You are the Follow-Up Question Generator for Nagpur Connect civic platform.
+Department: ${deptName}
+Incident Summary: ${params.summary}
+Department Typical Parameters: ${criticalParams}
 
-Information already known from the citizen's description:
-${params.alreadyKnown.length > 0 ? params.alreadyKnown.map((k) => `- ${k}`).join("\n") : "- (nothing specific yet)"}
+YOUR TASK:
+Generate between 2 to 4 high-value, critical follow-up questions to assist the ${deptName} in resolving this specific report.
 
-You have a pool of possible questions. Select ONLY the most critical MISSING information.
-Rules:
-1. Do NOT ask about information already provided.
-2. Select a maximum of 4 questions.
-3. Prefer required=true questions first.
-4. Keep the same id, question, type, options, placeholder from the pool.
-5. Return ONLY valid JSON: { "questions": [...selected questions...] }`;
+STRICT MANDATORY RULES:
+1. ALWAYS ASK FOR PHONE NUMBER:
+   Unless the citizen already explicitly provided a 10-digit mobile number in their text, the FIRST question MUST ALWAYS be:
+   - id: "phone_number"
+   - question: "What is your contact phone / mobile number?"
+   - type: "text"
+   - placeholder: "e.g. 9876543210"
+   - required: true
 
-    const userMessage = `Original report: "${params.originalText}"
+2. ASK FOR SPECIFIC LOCATION / LANDMARK (if not detailed in original text):
+   - id: "exact_location"
+   - question: "What is the exact street name or nearby landmark in Nagpur?"
+   - type: "text"
+   - placeholder: "e.g. Near Sitabuldi Metro Station"
+   - required: true
 
-Question pool:
-${poolJson}
+3. GENERATE 1-2 QUESTIONS STRICTLY SPECIFIC TO THIS DEPARTMENT AND THIS QUERY:
+   - Ask only what ${deptName} urgently needs to know about THIS specific incident.
+   - For example:
+     - If Electricity wire issue: Ask "Is the broken wire touching the ground or sparking?" (yesno)
+     - If Water supply cut: Ask "How many days has water supply been interrupted?" (chip)
+     - If Medical issue: Ask "Does the patient require immediate ambulance or hospital transport?" (yesno)
+     - If Pothole/Road: Ask "Is this causing vehicle damage or blocking the main lane?" (chip)
+     - If Waste dump: Ask "Is the garbage pile overflowing into the street or emitting severe foul odor?" (yesno)
+   - NEVER ask irrelevant questions (e.g., no traffic questions for water issues, no electric questions for garbage).
 
-Select max 4 most relevant questions that are NOT already answered.`;
+4. Total number of questions MUST NOT exceed 4.
+
+Return ONLY valid JSON in this exact schema:
+{
+  "questions": [
+    {
+      "id": "unique_id",
+      "question": "Question text?",
+      "type": "text|chip|multi_chip|yesno",
+      "options": ["Option A", "Option B"], // required if chip, multi_chip, or yesno
+      "placeholder": "e.g. text placeholder",
+      "required": true
+    }
+  ]
+}`;
+
+    const userMessage = `Original report by citizen: "${params.originalText}"
+Summary: "${params.summary}"
+
+Generate the required questions (including phone number and department-specific parameters).`;
 
     try {
-      const completion = await this.client.chat.completions.create({
-        model: this.fastModel,
+      const { content: rawContent } = await this.createCompletionWithFallback({
+        models: this.fastModels,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },
@@ -300,26 +507,58 @@ Select max 4 most relevant questions that are NOT already answered.`;
         response_format: { type: "json_object" },
       });
 
-      const rawContent = completion.choices[0]?.message?.content || '{"questions":[]}';
       const result = JSON.parse(rawContent) as AIQuestionSet;
+      let questions = result.questions || [];
 
-      if (result.questions && result.questions.length > 4) {
-        result.questions = result.questions.slice(0, 4);
+      // Ensure phone_number is always present if missing from generated questions
+      const hasPhoneQ = questions.some((q) => q.id.includes("phone") || q.question.toLowerCase().includes("phone") || q.question.toLowerCase().includes("mobile"));
+      if (!hasPhoneQ) {
+        questions.unshift({
+          id: "phone_number",
+          question: "What is your contact phone / mobile number?",
+          type: "text",
+          placeholder: "e.g. 9876543210",
+          required: true,
+        });
       }
 
-      return result;
+      if (questions.length > 4) {
+        questions = questions.slice(0, 4);
+      }
+
+      return { questions };
     } catch {
-      const fallback = params.questionPool
-        .filter((q) => q.required)
-        .slice(0, 3)
-        .map((q) => ({
-          id: q.id,
-          question: q.question,
-          type: q.type as "chip" | "multi_chip" | "yesno" | "text",
-          options: q.options,
-          placeholder: q.placeholder,
-          required: q.required,
-        }));
+      // Reliable static fallback ensuring Phone Number is always asked
+      const fallback = [
+        {
+          id: "phone_number",
+          question: "What is your contact phone / mobile number?",
+          type: "text" as const,
+          placeholder: "e.g. 9876543210",
+          required: true,
+        },
+        {
+          id: "citizen_name",
+          question: "What is your full name?",
+          type: "text" as const,
+          placeholder: "e.g. Ramesh Sharma",
+          required: true,
+        },
+        {
+          id: "exact_location",
+          question: "What is the exact street name or nearby landmark?",
+          type: "text" as const,
+          placeholder: "e.g. Near Sitabuldi Metro Station",
+          required: true,
+        },
+        {
+          id: "incident_urgency",
+          question: "Is this issue posing an immediate danger to the public?",
+          type: "yesno" as const,
+          options: ["Yes", "No", "Unsure"],
+          required: false,
+        },
+      ];
 
       return { questions: fallback };
     }
@@ -344,14 +583,14 @@ Select max 4 most relevant questions that are NOT already answered.`;
       .map((q) => `Q: ${q.questionText}\nA: ${q.answerValue}`)
       .join("\n\n");
 
-    const systemPrompt = `You are the final report synthesizer for Nagpur Connect, a civic incident management platform in Nagpur, India.
+    const systemPrompt = `You are the final report synthesizer for Nagpur Connect civic platform in Nagpur, India.
 
 You have received:
-1. A citizen's original incident report
-2. An initial AI analysis
-3. Additional information collected via follow-up questions
+1. Citizen's original incident report
+2. Initial AI assessment
+3. Additional citizen answers (including contact phone number, exact location, and department parameters)
 
-Your job: Synthesize ALL of this into a final, definitive incident assessment.
+Your job: Synthesize ALL of this into a definitive incident assessment report for the responding departments.
 
 Return ONLY valid JSON with this exact schema:
 {
@@ -365,10 +604,9 @@ Return ONLY valid JSON with this exact schema:
 }
 
 Rules:
-- If any answer indicates danger/emergency, RAISE severity accordingly
-- keyFindings must incorporate the citizen's answers (max 4 items)
-- recommendedActions are for the responding department (max 3 items)
-- Be specific — use details from the answers`;
+- If answers indicate acute danger, increase priority and severity
+- Extract citizen contact details and location into keyFindings
+- Recommended actions should be actionable instructions for ${params.departments.map(d => d.name).join(", ")}`;
 
     const userMessage = `ORIGINAL REPORT:
 "${params.originalText}"
@@ -383,11 +621,11 @@ ${params.locationText ? `Location: ${params.locationText}` : ""}
 CITIZEN'S ANSWERS TO FOLLOW-UP QUESTIONS:
 ${qaPairs || "(No answers provided)"}
 
-Generate the final definitive report.`;
+Synthesize the final definitive report.`;
 
     try {
-      const completion = await this.client.chat.completions.create({
-        model: this.fastModel,
+      const { content: rawContent } = await this.createCompletionWithFallback({
+        models: this.fastModels,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },
@@ -397,8 +635,7 @@ Generate the final definitive report.`;
         response_format: { type: "json_object" },
       });
 
-      const raw = completion.choices[0]?.message?.content || "{}";
-      const result = JSON.parse(raw);
+      const result = JSON.parse(rawContent);
 
       return {
         finalSummary: result.finalSummary || params.summary,
@@ -411,7 +648,6 @@ Generate the final definitive report.`;
       };
     } catch (err) {
       console.error("[AI] Final report generation failed:", err);
-      // Non-fatal fallback
       return {
         finalSummary: params.summary,
         severity: params.severity,
@@ -427,3 +663,4 @@ Generate the final definitive report.`;
     }
   }
 }
+

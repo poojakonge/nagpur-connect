@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import { ThemeProvider, ThemeScript } from "@/components/ui/theme-provider";
+import { ThemeProvider } from "@/components/ui/theme-provider";
 import { AuthProvider } from "@/components/auth-provider";
 
 const inter = Inter({
@@ -23,6 +23,8 @@ export const metadata: Metadata = {
   },
 };
 
+const themeScript = `(function(){try{var stored=localStorage.getItem('nagpur-theme');var theme=stored||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',theme);}catch(e){}})();`;
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -31,7 +33,11 @@ export default function RootLayout({
   return (
     <html lang="en" className={inter.variable} suppressHydrationWarning>
       <head>
-        <ThemeScript />
+        <script
+          id="theme-script"
+          dangerouslySetInnerHTML={{ __html: themeScript }}
+          suppressHydrationWarning
+        />
       </head>
       <body>
         <AuthProvider>

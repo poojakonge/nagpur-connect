@@ -5,7 +5,9 @@
    ════════════════════════════════════════════════════════ */
 
 import { NextRequest, NextResponse } from "next/server";
-import { query } from "@/lib/db";
+import { query, execute } from "@/lib/db";
+import { generateULID } from "@/lib/ids";
+import { notifyStatusChange } from "@/lib/notification-service";
 
 interface IncidentRow {
   id: string;
@@ -242,6 +244,105 @@ export async function GET(
     console.error("[API] /admin/incidents/[reference] error:", err);
     return NextResponse.json(
       { error: { code: "FETCH_FAILED", message: "Failed to fetch incident." } },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ reference: string }> }
+) {
+  try {
+    const { reference } = await params;
+    const body = await request.json();
+    const { status, reason, actorName } = body as {
+      status?: string;
+      reason?: string;
+      actorName?: string;
+    };
+
+    if (!reference || !status) {
+      return NextResponse.json(
+        { error: { code: "VALIDATION_ERROR", message: "Status is required" } },
+        { status: 400 }
+      );
+    }
+
+    const existing = await query<{ id: string; status: string; citizen_id: string; title: string }>(
+      `SELECT id, status, citizen_id, title FROM incidents WHERE public_reference = ? LIMIT 1`,
+      [reference]
+    );
+
+    if (existing.length === 0) {
+      return NextResponse.json(
+        { error: { code: "NOT_FOUND", message: "Incident not found" } },
+        { status: 404 }
+      );
+    }
+
+    const inc = existing[0];
+    const fromStatus = inc.status;
+    const isResolved = status === "RESOLVED" || status === "CLOSED";
+
+    // Update incident
+    await execute(
+      `UPDATE incidents SET
+         status = ?,
+         resolved_at = ${isResolved ? "NOW()" : "resolved_at"},
+         updated_at = NOW()
+       WHERE id = ?`,
+      [status, inc.id]
+    );
+
+    // Update departments status
+    await execute(
+      `UPDATE incident_departments SET
+         status = ?,
+         resolved_at = ${isResolved ? "NOW()" : "resolved_at"}
+       WHERE incident_id = ?`,
+      [status, inc.id]
+    );
+
+    // Log status history event
+    await execute(
+      `INSERT INTO incident_status_history (
+         id, incident_id, from_status, to_status, actor_id, actor_name, actor_role, reason, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [
+        generateULID(),
+        inc.id,
+        fromStatus,
+        status,
+        "admin_user",
+        actorName || "City Command Admin",
+        "SUPER_ADMIN",
+        reason || `Status updated to ${status} via Admin Command Portal`,
+      ]
+    ).catch(() => {});
+
+    // Trigger push & email notifications to citizen
+    if (inc.citizen_id) {
+      notifyStatusChange({
+        citizenId: inc.citizen_id,
+        incidentId: inc.id,
+        publicReference: reference,
+        newStatus: status,
+        title: inc.title || `Incident ${reference}`,
+        reason: reason || undefined,
+      }).catch((err) => {
+        console.warn("[Admin] Notification error:", err);
+      });
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: `Incident ${reference} updated to ${status}`,
+    });
+  } catch (err) {
+    console.error("[API] /admin/incidents/[reference] PATCH error:", err);
+    return NextResponse.json(
+      { error: { code: "UPDATE_FAILED", message: "Failed to update incident" } },
       { status: 500 }
     );
   }

@@ -1,114 +1,130 @@
 /* ════════════════════════════════════════════════════════
-   Admin Taxonomy Management — Categories & Subcategories
+   Admin Taxonomy Management — All 17 Departments & Subcategories
+   Connected with AI Department Routing Taxonomy
    ════════════════════════════════════════════════════════ */
 
-import { Card, Badge } from "@/components/ui";
-import { WrenchIcon, PlusIcon, ChevronDownIcon } from "@/components/ui/icons";
+"use client";
 
-const categories = [
-  {
-    name: "Road Damage",
-    slug: "road-damage",
-    active: true,
-    subcategories: ["Pothole", "Road crack", "Speed bump damage", "Road collapse", "Missing manhole cover"],
-  },
-  {
-    name: "Water & Drainage",
-    slug: "water-drainage",
-    active: true,
-    subcategories: ["Water main burst", "Flooding", "Drainage blocked", "Sewage overflow", "Water contamination"],
-  },
-  {
-    name: "Electrical Issues",
-    slug: "electrical",
-    active: true,
-    subcategories: ["Street light outage", "Exposed wiring", "Transformer issue", "Power outage"],
-  },
-  {
-    name: "Waste & Sanitation",
-    slug: "waste-sanitation",
-    active: true,
-    subcategories: ["Garbage accumulation", "Illegal dumping", "Public toilet issue", "Dead animal"],
-  },
-  {
-    name: "Traffic Issues",
-    slug: "traffic",
-    active: true,
-    subcategories: ["Signal malfunction", "Road accident", "Illegal parking", "Road blockage"],
-  },
-  {
-    name: "Public Safety",
-    slug: "public-safety",
-    active: true,
-    subcategories: ["Unsafe structure", "Missing signage", "Hazardous material", "Stray animal"],
-  },
-  {
-    name: "Environmental",
-    slug: "environmental",
-    active: true,
-    subcategories: ["Tree fallen", "Air pollution", "Noise pollution", "Water body pollution"],
-  },
-  {
-    name: "Fire Hazards",
-    slug: "fire-hazards",
-    active: true,
-    subcategories: ["Active fire", "Fire risk", "Gas leak", "Smoke/fumes"],
-  },
-];
+import React, { useState } from "react";
+import { Card, Badge } from "@/components/ui";
+import { WrenchIcon, SearchIcon, ChevronDownIcon } from "@/components/ui/icons";
+import { DEPARTMENTS } from "@/modules/ai/department-routing";
 
 export default function AdminTaxonomyPage() {
+  const [search, setSearch] = useState("");
+  const [expandedCode, setExpandedCode] = useState<string | null>(null);
+
+  const filtered = DEPARTMENTS.filter((d) => {
+    const q = search.toLowerCase();
+    return (
+      d.name.toLowerCase().includes(q) ||
+      d.code.toLowerCase().includes(q) ||
+      d.description.toLowerCase().includes(q) ||
+      (d.scope && d.scope.toLowerCase().includes(q))
+    );
+  });
+
   return (
     <div className="space-y-6 fade-in">
-      <div className="flex items-center justify-between">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Taxonomy</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-text-primary">
+            Department Taxonomy & AI Routing
+          </h1>
           <p className="text-sm text-text-tertiary mt-1">
-            Manage incident categories, subcategories, and routing mappings
+            Taxonomy hierarchy, keyword triggers, SLA definitions, and department boundaries for Nagpur
           </p>
         </div>
-        <button className="inline-flex items-center gap-2 px-4 py-2 bg-text-primary text-canvas rounded-pill text-sm font-medium hover:bg-[#d8d8db] transition-all">
-          <PlusIcon size={16} />
-          Add Category
-        </button>
+
+        <div className="px-3.5 py-1.5 bg-accent/10 text-accent font-bold text-xs rounded-xl self-start sm:self-auto">
+          17 Active Taxonomies
+        </div>
       </div>
 
-      <div className="space-y-4">
-        {categories.map((cat) => (
-          <Card key={cat.slug} padding="none">
-            <div className="flex items-center justify-between px-6 py-4">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-surface-2 flex items-center justify-center text-text-secondary">
-                  <WrenchIcon size={16} />
+      {/* Search */}
+      <div className="relative">
+        <SearchIcon size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-tertiary" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search taxonomy by department name, scope, or keywords..."
+          className="w-full pl-10 pr-4 py-2.5 bg-surface-0 border border-border rounded-xl text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent/30"
+        />
+      </div>
+
+      {/* Taxonomy Cards */}
+      <div className="space-y-3">
+        {filtered.map((cat) => {
+          const isExpanded = expandedCode === cat.code;
+          const subcategories = cat.subcategories || [];
+
+          return (
+            <div
+              key={cat.code}
+              className="bg-surface-0 border border-border rounded-2xl overflow-hidden shadow-sm hover:border-accent/30 transition-all"
+            >
+              <div
+                onClick={() => setExpandedCode(isExpanded ? null : cat.code)}
+                className="flex items-center justify-between px-6 py-4 cursor-pointer select-none"
+              >
+                <div className="flex items-center gap-3.5">
+                  <div className="w-10 h-10 rounded-xl bg-surface-1 border border-border flex items-center justify-center text-xl shadow-inner">
+                    {cat.icon}
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-text-primary flex items-center gap-2">
+                      {cat.name}
+                      {cat.nameMarathi && (
+                        <span className="text-xs text-accent font-medium">({cat.nameMarathi})</span>
+                      )}
+                    </h3>
+                    <p className="text-xs text-text-tertiary font-mono">Code: {cat.code} · SLA: {cat.slaHours || 24}h</p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="text-sm font-semibold">{cat.name}</h3>
-                  <p className="text-xs text-text-tertiary font-mono">{cat.slug}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                <Badge variant={cat.active ? "success" : "default"}>
-                  {cat.active ? "Active" : "Inactive"}
-                </Badge>
-                <span className="text-xs text-text-tertiary">
-                  {cat.subcategories.length} subcategories
-                </span>
-                <ChevronDownIcon size={16} className="text-text-tertiary" />
-              </div>
-            </div>
-            <div className="px-6 pb-4">
-              <div className="flex flex-wrap gap-2">
-                {cat.subcategories.map((sub) => (
-                  <span
-                    key={sub}
-                    className="px-2.5 py-1 bg-surface-2 text-text-secondary text-xs rounded-md border border-border hover:border-border-hover transition-colors cursor-default"
-                  >
-                    {sub}
+
+                <div className="flex items-center gap-3">
+                  <Badge variant={cat.priorityBand === "IMMEDIATE_EMERGENCY" ? "critical" : "accent"}>
+                    {(cat.priorityBand || "STANDARD").replace(/_/g, " ")}
+                  </Badge>
+                  <span className="text-xs text-text-tertiary hidden sm:inline">
+                    {subcategories.length} Subcategories
                   </span>
-                ))}
+                  <div className={`transform transition-transform ${isExpanded ? "rotate-180" : ""}`}>
+                    <ChevronDownIcon size={16} className="text-text-tertiary" />
+                  </div>
+                </div>
               </div>
+
+              {/* Collapsible details */}
+              {isExpanded && (
+                <div className="px-6 pb-5 pt-2 border-t border-border/60 bg-surface-1/30 space-y-3 text-xs">
+                  <div>
+                    <span className="font-bold text-text-secondary block mb-1">Operational Scope:</span>
+                    <p className="text-text-primary bg-surface-1 p-3 rounded-xl leading-relaxed">
+                      {cat.scope || cat.description}
+                    </p>
+                  </div>
+
+                  <div>
+                    <span className="font-bold text-text-secondary block mb-1.5">Subcategories & Handled Issues:</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {subcategories.map((sub) => (
+                        <span
+                          key={sub}
+                          className="px-2.5 py-1 bg-surface-1 border border-border text-text-primary rounded-lg font-medium text-[11px]"
+                        >
+                          {sub}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-          </Card>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

@@ -165,18 +165,22 @@ export async function GET(
       // Table may not exist yet — non-fatal
     }
 
-    // Parse JSON fields
+    // Parse JSON fields safely (TiDB mysql2 driver parses JSON columns into JS objects automatically)
     let finalReport = null;
     try {
       if (incident.final_ai_report) {
-        finalReport = JSON.parse(incident.final_ai_report);
+        finalReport = typeof incident.final_ai_report === "string" 
+          ? JSON.parse(incident.final_ai_report) 
+          : incident.final_ai_report;
       }
     } catch { /* invalid JSON */ }
 
     let deptAnswers = null;
     try {
       if (incident.department_answers) {
-        deptAnswers = JSON.parse(incident.department_answers);
+        deptAnswers = typeof incident.department_answers === "string" 
+          ? JSON.parse(incident.department_answers) 
+          : incident.department_answers;
       }
     } catch { /* invalid JSON */ }
 
@@ -204,7 +208,9 @@ export async function GET(
       internalSummary: incident.internal_summary,
       originalText: incident.original_text,
       citizenId: incident.citizen_id,
-      aiAnalysis: incident.ai_analysis ? JSON.parse(incident.ai_analysis) : null,
+      aiAnalysis: incident.ai_analysis 
+        ? (typeof incident.ai_analysis === "string" ? JSON.parse(incident.ai_analysis) : incident.ai_analysis) 
+        : null,
       departmentAnswers: deptAnswers,
     } : {};
 
@@ -229,7 +235,9 @@ export async function GET(
         questionId: c.question_id,
         questionText: c.question_text,
         questionType: c.question_type,
-        questionOptions: c.question_options ? JSON.parse(c.question_options) : null,
+        questionOptions: c.question_options 
+          ? (typeof c.question_options === "string" ? JSON.parse(c.question_options) : c.question_options) 
+          : null,
         answerValue: c.answer_value,
         answerTimestamp: c.answer_timestamp,
         isRequired: !!c.is_required,

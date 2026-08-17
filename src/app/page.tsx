@@ -5,6 +5,7 @@
 
 import Link from "next/link";
 import { Navbar, Footer } from "@/components/layout/navbar";
+import { DEPARTMENTS } from "@/modules/ai/department-routing";
 import {
   MicrophoneIcon,
   KeyboardIcon,
@@ -176,22 +177,13 @@ export default function HomePage() {
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              {[
-                { label: "Road Damage", emoji: "🛣️" },
-                { label: "Water & Drainage", emoji: "💧" },
-                { label: "Electrical Issues", emoji: "⚡" },
-                { label: "Waste & Sanitation", emoji: "🗑️" },
-                { label: "Traffic Issues", emoji: "🚦" },
-                { label: "Public Safety", emoji: "🛡️" },
-                { label: "Environmental", emoji: "🌳" },
-                { label: "Fire Hazards", emoji: "🔥" },
-              ].map((cat) => (
+              {DEPARTMENTS.map((dept) => (
                 <div
-                  key={cat.label}
+                  key={dept.code}
                   className="bg-surface-1 border border-border rounded-lg p-4 text-center hover:border-accent-muted hover:bg-surface-2 transition-all cursor-default"
                 >
-                  <div className="text-2xl mb-2">{cat.emoji}</div>
-                  <span className="text-sm font-medium text-text-secondary">{cat.label}</span>
+                  <div className="text-2xl mb-2">{dept.icon || "🏢"}</div>
+                  <span className="text-sm font-medium text-text-secondary">{dept.name}</span>
                 </div>
               ))}
             </div>

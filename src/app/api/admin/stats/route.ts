@@ -30,12 +30,18 @@ export async function GET() {
     const kpiRows = await query<KPIRow>(
       `SELECT
         COUNT(*) AS total,
-        SUM(CASE WHEN severity = 'CRITICAL' AND status NOT IN ('RESOLVED','CLOSED') THEN 1 ELSE 0 END) AS critical_active,
-        SUM(CASE WHEN status IN ('IN_PROGRESS','ASSIGNED') THEN 1 ELSE 0 END) AS in_progress,
-        SUM(CASE WHEN status = 'RESOLVED' AND resolved_at > DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS resolved_this_week,
-        SUM(CASE WHEN created_at > DATE_SUB(NOW(), INTERVAL 1 DAY) THEN 1 ELSE 0 END) AS today_count
+        COALESCE(SUM(CASE WHEN severity = 'CRITICAL' AND status NOT IN ('RESOLVED','CLOSED') THEN 1 ELSE 0 END), 0) AS critical_active,
+        COALESCE(SUM(CASE WHEN status IN ('IN_PROGRESS','ASSIGNED') THEN 1 ELSE 0 END), 0) AS in_progress,
+        COALESCE(SUM(CASE WHEN status = 'RESOLVED' AND resolved_at > DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END), 0) AS resolved_this_week,
+        COALESCE(SUM(CASE WHEN created_at > DATE_SUB(NOW(), INTERVAL 1 DAY) THEN 1 ELSE 0 END), 0) AS today_count
       FROM incidents`
-    );
+    ).catch(() => [{
+      total: 0,
+      critical_active: 0,
+      in_progress: 0,
+      resolved_this_week: 0,
+      today_count: 0,
+    }]);
 
     const kpi = kpiRows[0] || {
       total: 0,
@@ -50,14 +56,14 @@ export async function GET() {
       `SELECT
         department_code,
         department_name,
-        SUM(CASE WHEN status IN ('IN_PROGRESS','ASSIGNED') THEN 1 ELSE 0 END) AS active,
-        SUM(CASE WHEN status = 'ROUTED' THEN 1 ELSE 0 END) AS pending,
-        SUM(CASE WHEN status = 'RESOLVED' THEN 1 ELSE 0 END) AS resolved
+        COALESCE(SUM(CASE WHEN status IN ('IN_PROGRESS','ASSIGNED') THEN 1 ELSE 0 END), 0) AS active,
+        COALESCE(SUM(CASE WHEN status = 'ROUTED' THEN 1 ELSE 0 END), 0) AS pending,
+        COALESCE(SUM(CASE WHEN status = 'RESOLVED' THEN 1 ELSE 0 END), 0) AS resolved
       FROM incident_departments
       GROUP BY department_code, department_name
       ORDER BY active DESC, pending DESC
       LIMIT 10`
-    );
+    ).catch(() => []);
 
     return NextResponse.json({
       success: true,

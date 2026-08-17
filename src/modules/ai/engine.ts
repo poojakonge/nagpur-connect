@@ -10,10 +10,11 @@ import {
   resolveDepartments,
   getPriorityBand,
   formatDepartmentName,
+  getDepartmentByCode,
   type PriorityBand,
 } from "./department-routing";
 import { getCategoryBySlug } from "@/modules/incidents/category-taxonomy";
-import { getDeptConfig } from "@/modules/incidents/dept-params";
+import { DEPARTMENTS } from "@/modules/ai/department-routing";
 
 /** Interactive question for citizen (from Stage 2) */
 export interface DeptQuestion {
@@ -137,16 +138,14 @@ export async function analyzeIncident(params: {
   // Stage 2: Generate dept-specific questions (only when no mismatch)
   if (!result.mismatch) {
     const effectiveDept = params.selectedDepartment || result.mainCategory;
-    const deptConfig = getDeptConfig(effectiveDept);
+    const deptInfo = DEPARTMENTS.find((d) => d.code === effectiveDept);
 
-    if (deptConfig && deptConfig.questionPool.length > 0) {
+    if (deptInfo) {
       try {
         const questionSet: AIQuestionSet = await provider.generateDeptQuestions({
           summary: result.summary,
           departmentSlug: effectiveDept,
-          departmentName: deptConfig.name,
-          alreadyKnown: extractKnownInfo(params.text, deptConfig),
-          questionPool: deptConfig.questionPool,
+          departmentName: deptInfo.name,
           originalText: params.text,
         });
         result.deptQuestions = questionSet.questions || [];
@@ -159,27 +158,6 @@ export async function analyzeIncident(params: {
 
   result.processingTimeMs = Date.now() - startTotal;
   return result;
-}
-
-/**
- * Extract what is already known from the citizen's text
- * to avoid redundant questions.
- */
-function extractKnownInfo(text: string, deptConfig: ReturnType<typeof getDeptConfig>): string[] {
-  if (!deptConfig) return [];
-  const known: string[] = [];
-  const lowerText = text.toLowerCase();
-
-  for (const q of deptConfig.questionPool) {
-    if (!q.skipIfMentioned) continue;
-    for (const hint of q.skipIfMentioned) {
-      if (lowerText.includes(hint.toLowerCase())) {
-        known.push(`"${q.question}" — mentioned in description`);
-        break;
-      }
-    }
-  }
-  return known;
 }
 
 /**
@@ -221,10 +199,14 @@ function postProcess(
   // Emergency flag
   const isEmergency =
     category?.isEmergency ||
+    raw.mainCategory === "emergency" ||
+    raw.mainCategory === "ambulance" ||
+    raw.mainCategory === "fire_brigade" ||
     severityLevel === "critical" ||
     priorityScore >= 81;
 
-  const mainCategoryName = category?.name || raw.mainCategory;
+  const dept = getDepartmentByCode(raw.mainCategory);
+  const mainCategoryName = dept?.name || category?.name || formatDepartmentName(raw.mainCategory);
 
   // Confidence
   const confidence = {
@@ -234,10 +216,11 @@ function postProcess(
     departmentRouting: clamp01(raw.confidence?.departmentRouting ?? 0.7),
   };
 
-  // Mismatch — resolve suggested category name
-  const suggestedCat = raw.suggestedCategory
-    ? getCategoryBySlug(raw.suggestedCategory)
+  // Mismatch — resolve suggested department/category name
+  const suggestedDept = raw.suggestedCategory
+    ? getDepartmentByCode(raw.suggestedCategory) || getCategoryBySlug(raw.suggestedCategory)
     : null;
+  const suggestedCategoryName = suggestedDept?.name || (raw.suggestedCategory ? formatDepartmentName(raw.suggestedCategory) : null);
 
   return {
     mainCategory: raw.mainCategory || "unknown",
@@ -284,7 +267,7 @@ function postProcess(
     // Mismatch fields
     mismatch: raw.mismatch ?? false,
     suggestedCategory: raw.suggestedCategory ?? null,
-    suggestedCategoryName: suggestedCat?.name ?? null,
+    suggestedCategoryName: suggestedCategoryName ?? null,
     mismatchReason: raw.mismatchReason ?? null,
 
     // Stage 2 questions — populated after postProcess by analyzeIncident()

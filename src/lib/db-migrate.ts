@@ -126,6 +126,11 @@ CREATE TABLE IF NOT EXISTS citizens (
   email VARCHAR(255) NULL,
   name VARCHAR(200) NULL,
   phone VARCHAR(20) NULL,
+  ward_zone VARCHAR(100) NULL,
+  address TEXT NULL,
+  emergency_contact VARCHAR(100) NULL,
+  bio TEXT NULL,
+  notification_email_enabled TINYINT(1) NOT NULL DEFAULT 1,
   avatar_url TEXT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -173,6 +178,26 @@ const ALTER_MIGRATIONS: Array<{ sql: string; description: string }> = [
   {
     sql: `ALTER TABLE incidents ADD COLUMN original_transcript TEXT NULL AFTER original_text`,
     description: "Add original_transcript to incidents (Phase 3)",
+  },
+  {
+    sql: `ALTER TABLE citizens ADD COLUMN ward_zone VARCHAR(100) NULL AFTER phone`,
+    description: "Add ward_zone to citizens",
+  },
+  {
+    sql: `ALTER TABLE citizens ADD COLUMN address TEXT NULL AFTER ward_zone`,
+    description: "Add address to citizens",
+  },
+  {
+    sql: `ALTER TABLE citizens ADD COLUMN emergency_contact VARCHAR(100) NULL AFTER address`,
+    description: "Add emergency_contact to citizens",
+  },
+  {
+    sql: `ALTER TABLE citizens ADD COLUMN bio TEXT NULL AFTER emergency_contact`,
+    description: "Add bio to citizens",
+  },
+  {
+    sql: `ALTER TABLE citizens ADD COLUMN notification_email_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER bio`,
+    description: "Add notification_email_enabled to citizens",
   },
 ];
 

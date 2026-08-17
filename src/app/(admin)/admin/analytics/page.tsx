@@ -1,103 +1,171 @@
 /* ════════════════════════════════════════════════════════
-   Admin Analytics — Aggregate KPI views
+   Admin Analytics — Live Aggregates & Performance Trends
+   Directly pulling metrics from TiDB database
    ════════════════════════════════════════════════════════ */
 
+"use client";
+
+import React, { useState, useEffect } from "react";
 import { Card } from "@/components/ui";
 import { ChartIcon } from "@/components/ui/icons";
 
-const metrics = [
-  { label: "Avg Response Time", value: "2.3 hrs", change: "↓ 15% from last month" },
-  { label: "Avg Resolution Time", value: "18.5 hrs", change: "↓ 8% from last month" },
-  { label: "Citizen Satisfaction", value: "4.2/5", change: "↑ 0.3 from last month" },
-  { label: "Escalation Rate", value: "6.2%", change: "↓ 2.1% from last month" },
-];
+interface Metric {
+  label: string;
+  value: string;
+  sub: string;
+  change: string;
+  type: string;
+}
 
-const categoryBreakdown = [
-  { category: "Road Damage", count: 342, pct: 27 },
-  { category: "Water & Drainage", count: 215, pct: 17 },
-  { category: "Waste & Sanitation", count: 198, pct: 16 },
-  { category: "Electrical", count: 176, pct: 14 },
-  { category: "Traffic", count: 134, pct: 11 },
-  { category: "Environmental", count: 89, pct: 7 },
-  { category: "Public Safety", count: 56, pct: 5 },
-  { category: "Other", count: 37, pct: 3 },
-];
+interface CategoryBreakdown {
+  category: string;
+  count: number;
+  pct: number;
+}
 
-const trendData = [
-  { month: "Mar", incidents: 145 },
-  { month: "Apr", incidents: 178 },
-  { month: "May", incidents: 156 },
-  { month: "Jun", incidents: 201 },
-  { month: "Jul", incidents: 189 },
-  { month: "Aug", incidents: 212 },
-];
+interface TrendData {
+  period: string;
+  count: number;
+}
 
 export default function AdminAnalyticsPage() {
-  const maxIncidents = Math.max(...trendData.map((d) => d.incidents));
+  const [metrics, setMetrics] = useState<Metric[]>([]);
+  const [categories, setCategories] = useState<CategoryBreakdown[]>([]);
+  const [trends, setTrends] = useState<TrendData[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchAnalytics();
+  }, []);
+
+  const fetchAnalytics = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/admin/analytics");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setMetrics(data.metrics || []);
+          setCategories(data.categoryBreakdown || []);
+          setTrends(data.trendData || []);
+        }
+      }
+    } catch (err) {
+      console.error("[AdminAnalytics] Load error:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const maxTrend = Math.max(1, ...trends.map((t) => t.count));
 
   return (
     <div className="space-y-8 fade-in">
+      {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Analytics</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-text-primary">
+          City Civic Analytics & Insights
+        </h1>
         <p className="text-sm text-text-tertiary mt-1">
-          Aggregate performance metrics and incident trends
+          Real-time incident volumes, SLA resolution efficiency, and department breakdown from TiDB
         </p>
       </div>
 
-      {/* Performance Metrics */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {metrics.map((m) => (
-          <Card key={m.label} padding="md" variant="elevated">
-            <p className="text-xs text-text-tertiary uppercase tracking-wider">{m.label}</p>
-            <p className="text-2xl font-bold tracking-tight mt-1">{m.value}</p>
-            <p className="text-xs text-success mt-1">{m.change}</p>
-          </Card>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Category Breakdown */}
-        <Card padding="md">
-          <h2 className="text-base font-semibold mb-4">Incidents by Category</h2>
-          <div className="space-y-3">
-            {categoryBreakdown.map((cat) => (
-              <div key={cat.category}>
-                <div className="flex items-center justify-between text-sm mb-1">
-                  <span className="text-text-secondary">{cat.category}</span>
-                  <span className="text-text-tertiary">
-                    {cat.count} ({cat.pct}%)
-                  </span>
-                </div>
-                <div className="h-2 bg-surface-2 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-accent rounded-full transition-all"
-                    style={{ width: `${cat.pct}%` }}
-                  />
+      {loading ? (
+        <div className="py-20 text-center">
+          <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-xs text-text-tertiary">Computing live civic metrics...</p>
+        </div>
+      ) : (
+        <>
+          {/* Performance KPI Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {metrics.map((m) => (
+              <div
+                key={m.label}
+                className="bg-surface-0 border border-border rounded-3xl p-5 shadow-sm hover:border-accent/30 transition-all"
+              >
+                <p className="text-xs font-bold uppercase tracking-wider text-text-tertiary">
+                  {m.label}
+                </p>
+                <p className="text-2xl font-bold tracking-tight text-text-primary mt-2">
+                  {m.value}
+                </p>
+                <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/50 text-xs">
+                  <span className="text-text-secondary">{m.sub}</span>
+                  <span className="font-semibold text-accent">{m.change}</span>
                 </div>
               </div>
             ))}
           </div>
-        </Card>
 
-        {/* Trend Chart (CSS bars) */}
-        <Card padding="md">
-          <h2 className="text-base font-semibold mb-4">Monthly Incident Trend</h2>
-          <div className="flex items-end justify-between h-48 gap-2">
-            {trendData.map((d) => (
-              <div key={d.month} className="flex-1 flex flex-col items-center gap-1">
-                <span className="text-xs text-text-tertiary">{d.incidents}</span>
-                <div
-                  className="w-full bg-accent/20 rounded-t-md relative overflow-hidden hover:bg-accent/30 transition-colors"
-                  style={{ height: `${(d.incidents / maxIncidents) * 100}%` }}
-                >
-                  <div className="absolute bottom-0 left-0 right-0 h-1/2 bg-accent/40 rounded-t-md" />
-                </div>
-                <span className="text-xs text-text-tertiary mt-1">{d.month}</span>
+          {/* Charts and Breakdown Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Category Breakdown */}
+            <div className="bg-surface-0 border border-border rounded-3xl p-6 shadow-sm">
+              <h2 className="text-base font-bold text-text-primary mb-4 flex items-center gap-2">
+                <span>📊</span> Incidents by Department Category
+              </h2>
+
+              <div className="space-y-3.5">
+                {categories.map((cat) => (
+                  <div key={cat.category}>
+                    <div className="flex items-center justify-between text-xs font-bold mb-1.5">
+                      <span className="text-text-primary">{cat.category}</span>
+                      <span className="text-text-secondary font-mono">
+                        {cat.count} ({cat.pct}%)
+                      </span>
+                    </div>
+                    <div className="h-2.5 bg-surface-1 rounded-full overflow-hidden border border-border/40">
+                      <div
+                        className="h-full bg-accent rounded-full transition-all duration-500"
+                        style={{ width: `${Math.max(4, cat.pct)}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
+
+            {/* Monthly Trend Bars */}
+            <div className="bg-surface-0 border border-border rounded-3xl p-6 shadow-sm flex flex-col justify-between">
+              <div>
+                <h2 className="text-base font-bold text-text-primary mb-1 flex items-center gap-2">
+                  <span>📈</span> Monthly Reporting Velocity
+                </h2>
+                <p className="text-xs text-text-tertiary mb-6">
+                  Volume of civic reports logged across Nagpur municipal zones
+                </p>
+              </div>
+
+              <div className="flex items-end justify-between h-48 gap-3 pt-6 border-b border-border pb-2">
+                {trends.map((d) => {
+                  const heightPct = Math.round((d.count / maxTrend) * 100);
+                  return (
+                    <div key={d.period} className="flex-1 flex flex-col items-center gap-2 h-full justify-end">
+                      <span className="text-[11px] font-bold text-accent">{d.count}</span>
+                      <div
+                        className="w-full bg-accent/20 hover:bg-accent/40 rounded-t-xl transition-all relative overflow-hidden flex items-end justify-center"
+                        style={{ height: `${Math.max(12, heightPct)}%` }}
+                      >
+                        <div className="w-full bg-accent rounded-t-xl h-2/3 opacity-80" />
+                      </div>
+                      <span className="text-[10px] font-semibold text-text-tertiary truncate w-full text-center">
+                        {d.period}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="mt-4 flex items-center justify-between text-xs text-text-tertiary">
+                <span>Data source: TiDB Cluster</span>
+                <span className="text-success font-bold">✓ Live Sync</span>
+              </div>
+            </div>
           </div>
-        </Card>
-      </div>
+        </>
+      )}
     </div>
   );
 }
