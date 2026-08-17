@@ -52,6 +52,12 @@ export const DEPT_TO_DATASET: Record<string, string[]> = {
     "nagpur_city_police",
     "nagpur_nmc_all_zonal_offices",
   ],
+
+  // Forest & Wildlife
+  forest_wildlife: ["nagpur_territorial_forest_dept_clean"],
+
+  // Women & Child Development
+  women_child_dev: ["district_women_and_child_development_nagpur"],
 };
 
 /**
@@ -96,6 +102,8 @@ export function getDeptDisplayName(code: string): string {
     environment: "Environment",
     municipal_corp: "Municipal Corporation",
     disaster_management: "Disaster Management",
+    forest_wildlife: "Forest & Wildlife",
+    women_child_dev: "Women & Child Development",
   };
   return names[code] || code.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }

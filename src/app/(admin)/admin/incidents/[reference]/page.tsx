@@ -32,6 +32,7 @@ interface IncidentDetail {
   citizenSummary: string | null;
   internalSummary: string | null;
   originalText: string | null;
+  originalTranscript: string | null;
   locationText: string | null;
   latitude: number | null;
   longitude: number | null;
@@ -44,6 +45,8 @@ interface IncidentDetail {
     confidence: number | null;
     analysis: Record<string, unknown> | null;
   };
+  finalAiReport: Record<string, unknown> | null;
+  geoRouting: Record<string, unknown> | null;
   confirmedAt: string | null;
   routedAt: string | null;
   resolvedAt: string | null;
@@ -72,6 +75,15 @@ interface MediaItem {
   mimeType: string;
   fileSize: number;
   purpose: string;
+}
+
+interface Conversation {
+  questionId: string;
+  questionText: string;
+  questionType: string;
+  questionOptions: string[] | null;
+  answerValue: string | null;
+  sortOrder: number;
 }
 
 /* ─── Helpers ─── */
@@ -121,6 +133,7 @@ export default function AdminIncidentDetailPage({
   const [departments, setDepartments] = useState<Department[]>([]);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [media, setMedia] = useState<MediaItem[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusUpdating, setStatusUpdating] = useState(false);
@@ -140,6 +153,7 @@ export default function AdminIncidentDetailPage({
           setDepartments(data.departments || []);
           setTimeline(data.timeline || []);
           setMedia(data.media || []);
+          setConversations(data.conversations || []);
         }
       } catch (err) {
         setError("Failed to load incident");
@@ -338,6 +352,94 @@ export default function AdminIncidentDetailPage({
                   </div>
                 ))}
               </div>
+            </Card>
+          )}
+
+          {/* AI Q&A Conversations */}
+          {conversations.length > 0 && (
+            <Card padding="md">
+              <p className="text-[10px] text-text-tertiary uppercase tracking-wider font-semibold mb-3">
+                💬 AI Questions & Citizen Answers
+              </p>
+              <div className="space-y-3">
+                {conversations.map((c, i) => (
+                  <div key={c.questionId || i} className="bg-surface-1 rounded-xl p-3">
+                    <p className="text-xs font-semibold text-text-primary mb-1">
+                      Q{i + 1}: {c.questionText}
+                    </p>
+                    <p className="text-sm text-accent font-medium">
+                      → {c.answerValue || "(no answer)"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* Final AI Report */}
+          {incident.finalAiReport && (() => {
+            const rpt = incident.finalAiReport as Record<string, unknown>;
+            const summary = rpt.finalSummary ? String(rpt.finalSummary) : null;
+            const findings = Array.isArray(rpt.keyFindings) ? rpt.keyFindings as string[] : [];
+            const actions = Array.isArray(rpt.recommendedActions) ? rpt.recommendedActions as string[] : [];
+            return (
+            <Card padding="md">
+              <p className="text-[10px] text-text-tertiary uppercase tracking-wider font-semibold mb-3">
+                📄 Final AI Report
+              </p>
+              <div className="space-y-3">
+                {summary && (
+                  <div>
+                    <p className="text-[10px] text-text-tertiary uppercase font-semibold mb-1">Summary</p>
+                    <p className="text-sm text-text-secondary leading-relaxed">{summary}</p>
+                  </div>
+                )}
+                {findings.length > 0 && (
+                  <div>
+                    <p className="text-[10px] text-text-tertiary uppercase font-semibold mb-1">Key Findings</p>
+                    <ul className="space-y-1">
+                      {findings.map((f, i) => (
+                        <li key={i} className="text-sm text-text-secondary flex items-start gap-2">
+                          <span className="text-accent mt-0.5">•</span>
+                          <span>{f}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {actions.length > 0 && (
+                  <div>
+                    <p className="text-[10px] text-text-tertiary uppercase font-semibold mb-1">Recommended Actions</p>
+                    <ul className="space-y-1">
+                      {actions.map((a, i) => (
+                        <li key={i} className="text-sm text-text-secondary flex items-start gap-2">
+                          <span className="text-warning mt-0.5">▸</span>
+                          <span>{a}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <details className="mt-2">
+                  <summary className="text-[10px] text-text-tertiary cursor-pointer hover:text-text-secondary">Raw Report JSON</summary>
+                  <pre className="text-xs bg-surface-1 rounded-lg p-3 overflow-x-auto text-text-secondary max-h-[200px] overflow-y-auto mt-2">
+                    {JSON.stringify(incident.finalAiReport, null, 2)}
+                  </pre>
+                </details>
+              </div>
+            </Card>
+            );
+          })()}
+
+          {/* Original Transcript (voice input) */}
+          {incident.originalTranscript && (
+            <Card padding="md">
+              <p className="text-[10px] text-text-tertiary uppercase tracking-wider font-semibold mb-1">
+                🎙️ Original Voice Transcript
+              </p>
+              <p className="text-sm text-text-tertiary italic leading-relaxed">
+                &ldquo;{incident.originalTranscript}&rdquo;
+              </p>
             </Card>
           )}
         </div>

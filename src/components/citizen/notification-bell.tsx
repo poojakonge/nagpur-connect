@@ -8,6 +8,11 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { citizenHeaders } from "@/lib/guest-id";
+import {
+  requestNotificationPermission,
+  showNewNotifications,
+  subscribeToPush,
+} from "@/lib/browser-notifications";
 
 interface Notification {
   id: string;
@@ -50,8 +55,12 @@ export function NotificationBell() {
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
-          setNotifications(data.notifications || []);
+          const newNotifs = data.notifications || [];
+          setNotifications(newNotifs);
           setUnreadCount(data.unreadCount || 0);
+
+          // Show browser notifications for new unread items (with sound)
+          showNewNotifications(newNotifs);
         }
       }
     } catch {
@@ -63,6 +72,14 @@ export function NotificationBell() {
   useEffect(() => {
     fetchNotifications();
     const interval = setInterval(fetchNotifications, 30_000);
+
+    // Request notification permission + subscribe to push
+    requestNotificationPermission().then((perm) => {
+      if (perm === "granted") {
+        subscribeToPush().catch(() => {});
+      }
+    });
+
     return () => clearInterval(interval);
   }, [fetchNotifications]);
 
@@ -131,9 +148,11 @@ export function NotificationBell() {
         )}
       </button>
 
-      {/* Dropdown panel */}
+      {/* Dropdown panel — fixed on mobile, absolute on desktop */}
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 bg-surface-0 border border-border rounded-2xl shadow-2xl z-50 overflow-hidden animate-fadeIn">
+        <div
+          className="fixed sm:absolute right-2 sm:right-0 top-14 sm:top-full sm:mt-2 w-[calc(100vw-1rem)] sm:w-80 max-w-sm bg-surface-0 border border-border rounded-2xl shadow-2xl z-[9999] overflow-hidden animate-fadeIn"
+        >
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-border">
             <h3 className="text-sm font-semibold text-text-primary">Notifications</h3>

@@ -133,6 +133,18 @@ CREATE TABLE IF NOT EXISTS citizens (
   UNIQUE KEY idx_citizen_google (google_id)
 );
 
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id CHAR(26) NOT NULL PRIMARY KEY,
+  citizen_id VARCHAR(100) NOT NULL,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth_key VARCHAR(255) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY idx_push_endpoint (endpoint(500)),
+  KEY idx_push_citizen (citizen_id)
+);
+
 `;
 
 /**

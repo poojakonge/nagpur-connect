@@ -83,6 +83,17 @@ export const env = {
   // ─── Session ───
   sessionSecret: optionalEnv("SESSION_SECRET", "dev-secret-change-me"),
 
+  // ─── VAPID Push Notifications ───
+  vapidSubject: optionalEnv("VAPID_SUBJECT", "mailto:mesadinepos@gmail.com"),
+  vapidPublicKey: optionalEnv("VAPID_PUBLIC_KEY", "BJ0sCzV6gYOOVWQAX8qA019mevAv2YpZOh9OXXLi_x7pB0q-0tJBftrTkSkBJKwd391aQ6s07cZXd1cXei7ezks"),
+  vapidPrivateKey: optionalEnv("VAPID_PRIVATE_KEY", ""),
+
+  // ─── Google OAuth ───
+  googleClientId: optionalEnv("GOOGLE_CLIENT_ID", ""),
+  googleClientSecret: optionalEnv("GOOGLE_CLIENT_SECRET", ""),
+  nextAuthSecret: optionalEnv("NEXTAUTH_SECRET", optionalEnv("SESSION_SECRET", "dev-secret-change-me")),
+  nextAuthUrl: optionalEnv("NEXTAUTH_URL", "http://localhost:3000"),
+
   // ─── App ───
   appUrl: optionalEnv("NEXT_PUBLIC_APP_URL", "http://localhost:3000"),
   nodeEnv: optionalEnv("NODE_ENV", "development"),

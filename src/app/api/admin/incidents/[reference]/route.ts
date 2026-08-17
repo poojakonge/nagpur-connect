@@ -22,6 +22,7 @@ interface IncidentRow {
   citizen_summary: string | null;
   internal_summary: string | null;
   original_text: string | null;
+  original_transcript: string | null;
   location_text: string | null;
   latitude: number | null;
   longitude: number | null;
@@ -31,13 +32,24 @@ interface IncidentRow {
   ai_model: string | null;
   ai_confidence: number | null;
   ai_analysis: string | null;
+  final_ai_report: string | null;
   selected_department: string | null;
   department_answers: string | null;
+  geo_routing: string | null;
   confirmed_at: string | null;
   routed_at: string | null;
   resolved_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface ConversationRow {
+  question_id: string;
+  question_text: string;
+  question_type: string;
+  question_options: string | null;
+  answer_value: string | null;
+  sort_order: number;
 }
 
 interface DepartmentRow {
@@ -83,14 +95,15 @@ export async function GET(
       );
     }
 
-    // Fetch incident — full admin view
+    // Fetch incident — full admin view (all columns including AI report, geo routing)
     const incidents = await query<IncidentRow>(
       `SELECT id, public_reference, citizen_id, category_slug, subcategory_slug,
               status, severity, priority_score, priority_band, privacy_level,
               title, citizen_summary, internal_summary, original_text,
+              original_transcript,
               location_text, latitude, longitude, location_accuracy,
               is_emergency, ai_provider, ai_model, ai_confidence, ai_analysis,
-              selected_department, department_answers,
+              final_ai_report, selected_department, department_answers, geo_routing,
               confirmed_at, routed_at, resolved_at, created_at, updated_at
        FROM incidents WHERE public_reference = ?`,
       [reference]
@@ -105,8 +118,8 @@ export async function GET(
 
     const incident = incidents[0];
 
-    // Fetch departments, timeline, media in parallel
-    const [departments, history, media] = await Promise.all([
+    // Fetch departments, timeline, media, AI conversations in parallel
+    const [departments, history, media, conversations] = await Promise.all([
       query<DepartmentRow>(
         `SELECT department_code, department_name, routing_reason, status,
                 priority_override, received_at, resolved_at, created_at
@@ -127,18 +140,29 @@ export async function GET(
          ORDER BY created_at ASC`,
         [incident.id]
       ),
+      query<ConversationRow>(
+        `SELECT question_id, question_text, question_type, question_options,
+                answer_value, sort_order
+         FROM incident_ai_conversations WHERE incident_id = ?
+         ORDER BY sort_order ASC`,
+        [incident.id]
+      ).catch(() => [] as ConversationRow[]),  // Table may not exist — safe fallback
     ]);
 
-    // Parse JSON fields safely
-    let aiAnalysis = null;
-    try {
-      aiAnalysis = incident.ai_analysis ? JSON.parse(incident.ai_analysis) : null;
-    } catch { /* ignore parse errors */ }
+    // Parse JSON fields safely — TiDB may return JSON columns as objects or strings
+    const parseJson = (val: unknown): unknown => {
+      if (val === null || val === undefined) return null;
+      if (typeof val === "object") return val; // Already parsed by mysql2 driver
+      if (typeof val === "string") {
+        try { return JSON.parse(val); } catch { return null; }
+      }
+      return null;
+    };
 
-    let departmentAnswers = null;
-    try {
-      departmentAnswers = incident.department_answers ? JSON.parse(incident.department_answers) : null;
-    } catch { /* ignore */ }
+    const aiAnalysis = parseJson(incident.ai_analysis);
+    const departmentAnswers = parseJson(incident.department_answers);
+    const finalAiReport = parseJson(incident.final_ai_report);
+    const geoRouting = parseJson(incident.geo_routing);
 
     return NextResponse.json({
       success: true,
@@ -157,6 +181,7 @@ export async function GET(
         citizenSummary: incident.citizen_summary,
         internalSummary: incident.internal_summary,
         originalText: incident.original_text,
+        originalTranscript: incident.original_transcript,
         locationText: incident.location_text,
         latitude: incident.latitude,
         longitude: incident.longitude,
@@ -170,6 +195,8 @@ export async function GET(
           confidence: incident.ai_confidence,
           analysis: aiAnalysis,
         },
+        finalAiReport,
+        geoRouting,
         confirmedAt: incident.confirmed_at,
         routedAt: incident.routed_at,
         resolvedAt: incident.resolved_at,
@@ -185,6 +212,14 @@ export async function GET(
         receivedAt: d.received_at,
         resolvedAt: d.resolved_at,
         createdAt: d.created_at,
+      })),
+      conversations: conversations.map((c) => ({
+        questionId: c.question_id,
+        questionText: c.question_text,
+        questionType: c.question_type,
+        questionOptions: parseJson(c.question_options),
+        answerValue: c.answer_value,
+        sortOrder: c.sort_order,
       })),
       timeline: history.map((h) => ({
         fromStatus: h.from_status,

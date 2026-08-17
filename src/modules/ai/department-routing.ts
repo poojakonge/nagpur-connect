@@ -27,6 +27,8 @@ export const DEPARTMENTS: DepartmentInfo[] = [
   { code: "disaster_management", name: "Disaster Management", description: "Natural and man-made disaster response" },
   { code: "municipal_corp", name: "Municipal Corporation", description: "General municipal services (NMC)" },
   { code: "public_works", name: "Public Works Department", description: "Infrastructure and construction" },
+  { code: "forest_wildlife", name: "Forest & Wildlife Department", description: "Forest conservation, wildlife protection, tree-related issues" },
+  { code: "women_child_dev", name: "Women & Child Development", description: "Women's safety, child protection, domestic issues" },
 ];
 
 /**
@@ -93,6 +95,24 @@ export const ROUTING_RULES: Record<string, string[]> = {
   noise_pollution: ["environment", "police"],
   encroachment: ["municipal_corp", "police"],
   damaged_public_property: ["municipal_corp", "police"],
+
+  // Forest & Wildlife
+  animal_attack: ["forest_wildlife", "police", "ambulance"],
+  wild_animal_sighting: ["forest_wildlife", "police"],
+  illegal_logging: ["forest_wildlife", "police"],
+  forest_fire: ["forest_wildlife", "fire_brigade", "disaster_management"],
+  wildlife_conflict: ["forest_wildlife"],
+  tree_fall: ["forest_wildlife", "road_maintenance", "municipal_corp"],
+  illegal_hunting: ["forest_wildlife", "police"],
+
+  // Women & Child Safety
+  domestic_violence: ["women_child_dev", "police"],
+  child_abuse: ["women_child_dev", "police"],
+  missing_child: ["women_child_dev", "police"],
+  eve_teasing: ["women_child_dev", "police"],
+  dowry_harassment: ["women_child_dev", "police"],
+  child_labor: ["women_child_dev", "police"],
+  women_helpline: ["women_child_dev"],
 };
 
 /** Priority thresholds — configurable */
