@@ -531,3 +531,4 @@ export function Icon({ children, size = 20, className = "" }: IconProps) {
     </span>
   );
 }
+

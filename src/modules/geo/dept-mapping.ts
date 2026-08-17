@@ -58,6 +58,9 @@ export const DEPT_TO_DATASET: Record<string, string[]> = {
 
   // Women & Child Development
   women_child_dev: ["district_women_and_child_development_nagpur"],
+
+  // Alias — women_child_safety is the code used in department-registry.ts
+  women_child_safety: ["district_women_and_child_development_nagpur"],
 };
 
 /**

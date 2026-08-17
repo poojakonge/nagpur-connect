@@ -168,6 +168,26 @@ export const DEPARTMENT_REGISTRY: Record<string, DepartmentInfo> = {
     geoJsonFile: "nagpur_nmc_pwd.geojson",
     categories: [],
   },
+  forest_wildlife: {
+    code: "forest_wildlife",
+    name: "Forest & Wildlife",
+    shortName: "Forest",
+    icon: "🐅",
+    color: "text-emerald-700",
+    bgColor: "bg-emerald-50",
+    geoJsonFile: "nagpur_territorial_forest_dept_clean.geojson",
+    categories: ["animal_wildlife", "environment"],
+  },
+  women_child_safety: {
+    code: "women_child_safety",
+    name: "Women & Child Safety",
+    shortName: "W&C Safety",
+    icon: "🛡️",
+    color: "text-fuchsia-600",
+    bgColor: "bg-fuchsia-50",
+    geoJsonFile: "district_women_and_child_development_nagpur.geojson",
+    categories: ["safety", "emergency"],
+  },
 };
 
 /** Get department info by code */
