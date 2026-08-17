@@ -20,8 +20,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   secret: env.nextAuthSecret,
   session: { strategy: "jwt" },
   pages: {
-    signIn: "/auth/signin",
-    error: "/auth/error",
+    signIn: "/login",
+    error: "/login",
   },
   callbacks: {
     async signIn({ user, account }) {
