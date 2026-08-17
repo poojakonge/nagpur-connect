@@ -35,10 +35,22 @@ interface UseSpeechReturn {
   isSupported: boolean;
   providerName: string;
   permissionDenied: boolean;
+  isMobile: boolean;
   startRecording: () => void;
   stopRecording: () => void;
   resetTranscript: () => void;
   error: string | null;
+}
+
+/**
+ * Detect Android / mobile browsers that cannot sustain a real-time
+ * AssemblyAI WebSocket stream. These devices use the batch-record path.
+ */
+function detectMobile(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent
+  );
 }
 
 export function useSpeech(language = "en-IN"): UseSpeechReturn {
@@ -47,6 +59,8 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
   const [interimTranscript, setInterimTranscript] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [providerName, setProviderName] = useState("assemblyai");
+  // Stable across renders — computed once on mount
+  const isMobile = useRef(detectMobile()).current;
 
   const providerRef = useRef<ClientSpeechProvider | null>(null);
 
@@ -140,7 +154,36 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
       providerRef.current = null;
     }
 
-    // Try AssemblyAI — check token availability first (fast HEAD check)
+    // ── MOBILE PATH ─────────────────────────────────────────
+    // Android Chrome cannot sustain a real-time AssemblyAI WebSocket
+    // stream (audio pipeline gets throttled after ~1-2s by the OS).
+    // Mobile devices use MobileRecorderProvider instead:
+    //   record complete audio → batch-transcribe on stop.
+    if (isMobile) {
+      try {
+        const { MobileRecorderProvider } = await import("./mobile-recorder-provider");
+        const provider = new MobileRecorderProvider();
+        wireCallbacks(provider);
+        providerRef.current = provider;
+        setProviderName("mobile-recorder");
+
+        if (sessionIdRef.current !== newSessionId) {
+          setState("idle");
+          return;
+        }
+
+        await provider.start({ language });
+        sessionIdRef.current = provider.sessionId;
+      } catch (err) {
+        console.error("[Speech] MobileRecorderProvider failed:", err);
+        setError("Could not start recording. Please try again.");
+        setState("error");
+      }
+      return;
+    }
+
+    // ── DESKTOP PATH ────────────────────────────────────────
+    // Try AssemblyAI real-time streaming first, fall back to browser speech.
     let useAssemblyAI = false;
     try {
       const tokenRes = await fetch("/api/speech/token", {
@@ -153,18 +196,15 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
         }
       }
     } catch {
-      // Token endpoint unavailable — will use browser speech
       console.log("[Speech] AssemblyAI token unavailable, using browser speech");
     }
 
-    // Check if session was cancelled during the async token check
     if (sessionIdRef.current !== newSessionId) {
       setState("idle");
       return;
     }
 
     if (useAssemblyAI) {
-      // Use AssemblyAI — dynamic import to avoid loading on non-supported browsers
       try {
         const { AssemblyAiProvider } = await import("./assembly-ai-provider");
         const provider = new AssemblyAiProvider();
@@ -172,25 +212,20 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
         providerRef.current = provider;
         setProviderName("assemblyai");
 
-        // Check session again after dynamic import
         if (sessionIdRef.current !== newSessionId) {
           setState("idle");
           return;
         }
 
         await provider.start({ language, continuous: true, interimResults: true });
-        // After start(), the provider's sessionId is set internally.
-        // Update our ref to match so callbacks are validated correctly.
         sessionIdRef.current = provider.sessionId;
       } catch (importErr) {
         console.error("[Speech] AssemblyAI import/start failed:", importErr);
-        // Fall through to browser speech
         useAssemblyAI = false;
       }
     }
 
     if (!useAssemblyAI) {
-      // Fallback: Browser Web Speech API
       const browser = new BrowserSpeechProvider();
       wireCallbacks(browser);
       providerRef.current = browser;
@@ -207,7 +242,7 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
       browser.start({ language, continuous: true, interimResults: true });
       sessionIdRef.current = browser.sessionId;
     }
-  }, [language, wireCallbacks]);
+  }, [language, wireCallbacks, isMobile]);
 
   const stopRecording = useCallback(() => {
     providerRef.current?.stop();
@@ -231,6 +266,7 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
     isSupported,
     providerName,
     permissionDenied,
+    isMobile,
     startRecording,
     stopRecording,
     resetTranscript,

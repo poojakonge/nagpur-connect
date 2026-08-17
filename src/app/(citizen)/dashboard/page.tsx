@@ -147,12 +147,36 @@ export default function CitizenDashboard() {
 
   const stopRecordingAndPreview = useCallback(() => {
     speech.stopRecording();
+
+    // Desktop streaming: transcript is available synchronously after stop.
+    // Mobile batch: transcript arrives async (batch transcription takes 5-20s).
+    // On mobile, don't navigate yet — the useEffect below handles auto-advance.
     if (speech.transcript) {
       draft.appendText(speech.transcript);
+      speech.resetTranscript();
+      setView("preview");
     }
-    speech.resetTranscript();
-    setView("preview");
+    // If no transcript yet: state will go to "processing", UI stays on composing.
+    // useEffect watches for transcript + idle to auto-advance.
   }, [speech, draft]);
+
+  // Auto-advance to preview when mobile batch transcription completes.
+  // When MobileRecorderProvider finishes: onResult fires (sets speech.transcript),
+  // then onStateChange("idle") fires. We react to that combination here.
+  useEffect(() => {
+    if (
+      view === "composing" &&
+      draft.draft.source === "voice" &&
+      speech.state === "idle" &&
+      !speech.isRecording &&
+      speech.transcript
+    ) {
+      draft.appendText(speech.transcript);
+      speech.resetTranscript();
+      setView("preview");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speech.state, speech.transcript]);
 
   const goToPreview = useCallback(() => setView("preview"), []);
   const goBackToComposing = useCallback(() => setView("composing"), []);
@@ -568,7 +592,9 @@ export default function CitizenDashboard() {
                   </svg>
                 </div>
                 <p className="text-sm text-accent font-medium mb-1">
-                  {speech.state === "processing" ? "Processing..." : "Speak now"}
+                  {speech.state === "processing"
+                    ? (speech.isMobile ? "Transcribing your speech\u2026" : "Processing...")
+                    : "Speak now"}
                 </p>
                 {speech.interimTranscript && (
                   <p className="text-sm text-text-secondary italic mt-2">
@@ -578,12 +604,22 @@ export default function CitizenDashboard() {
                 {speech.transcript && (
                   <p className="text-sm text-text-primary mt-2">{speech.transcript}</p>
                 )}
-                <button
-                  onClick={stopRecordingAndPreview}
-                  className="mt-4 px-6 py-2.5 bg-accent text-white rounded-full text-sm font-bold cursor-pointer hover:bg-accent-hover transition-all"
-                >
-                  Stop Recording
-                </button>
+                {/* Only show Stop button while actively recording — not while batch-transcribing */}
+                {speech.isRecording && (
+                  <button
+                    onClick={stopRecordingAndPreview}
+                    className="mt-4 px-6 py-2.5 bg-accent text-white rounded-full text-sm font-bold cursor-pointer hover:bg-accent-hover transition-all"
+                  >
+                    Stop Recording
+                  </button>
+                )}
+                {speech.state === "processing" && (
+                  <p className="mt-3 text-xs text-text-tertiary">
+                    {speech.isMobile
+                      ? "Please wait while your speech is being transcribed\u2026"
+                      : "Connecting to speech service\u2026"}
+                  </p>
+                )}
               </div>
             )}
 
