@@ -70,11 +70,13 @@ export default function DepartmentOperationsConsole({
                   inc.deptStatus !== "CLOSED"
               )
               .map((inc: any) => ({
-                id: inc.incidentId,
-                trackingId: inc.publicReference,
-                category: inc.title || "Untitled Report",
-                location: inc.locationText || "Nagpur",
-                status: inc.deptStatus,
+                id: inc.incidentId || inc.id || inc.publicReference,
+                trackingId: inc.publicReference || inc.trackingId,
+                category: inc.title && inc.title.trim() && !inc.title.toLowerCase().includes("untitled")
+                  ? inc.title.trim()
+                  : inc.citizenSummary || inc.category || "Emergency Civic Report",
+                location: inc.locationText || inc.location || "Nagpur",
+                status: inc.deptStatus || inc.status || "ROUTED",
               }));
             setCriticalIncidents(critical);
           }

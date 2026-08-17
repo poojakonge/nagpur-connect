@@ -93,7 +93,8 @@ export async function notifyReportReceived(params: {
   notifyCitizenViaEmail(params.citizenId, {
     title: params.title,
     publicReference: params.publicReference,
-    statusText: "Report Received & AI Analyzed",
+    newStatus: "CONFIRMED",
+    reason: "Report successfully submitted by citizen and registered in municipal dispatch.",
   }).catch(() => {});
 }
 
@@ -107,6 +108,9 @@ export async function notifyStatusChange(params: {
   newStatus: string;
   title?: string;
   reason?: string;
+  departmentName?: string;
+  locationText?: string;
+  workerName?: string;
 }): Promise<void> {
   const statusNames: Record<string, string> = {
     ROUTED: "routed to department",
@@ -132,8 +136,11 @@ export async function notifyStatusChange(params: {
   notifyCitizenViaEmail(params.citizenId, {
     title: params.title || `Incident ${params.publicReference}`,
     publicReference: params.publicReference,
-    statusText: statusText.toUpperCase(),
+    newStatus: params.newStatus,
     reason: params.reason,
+    departmentName: params.departmentName,
+    locationText: params.locationText,
+    workerName: params.workerName,
   }).catch(() => {});
 }
 

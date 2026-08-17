@@ -22,12 +22,12 @@ export function DepartmentHeader({
           {departmentIcon}
         </div>
         <div>
-          <h1 className="font-display text-2xl font-black text-slate-900 tracking-tight leading-none">
+          <h1 className="text-xl font-bold text-slate-900 tracking-tight">
             {departmentName}
           </h1>
-          <div className="flex items-center gap-2 mt-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <p className="text-[11px] text-slate-500 font-bold tracking-wider uppercase">
+          <div className="flex items-center gap-2 mt-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <p className="text-xs text-slate-500 font-medium">
               Operational Command Portal
             </p>
           </div>
@@ -36,8 +36,8 @@ export function DepartmentHeader({
 
       <div className="flex items-center gap-3">
         {criticalCount > 0 && (
-          <span className="font-display font-bold text-xs text-rose-700 bg-rose-50 border border-rose-200 px-3 py-1 rounded-full shadow-xs flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+          <span className="font-semibold text-xs text-rose-700 bg-rose-50 border border-rose-200 px-3 py-1 rounded-full shadow-2xs flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
             {criticalCount} Critical
           </span>
         )}

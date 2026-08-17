@@ -42,6 +42,7 @@ type SpeechRecognitionType = any;
 export class BrowserSpeechProvider implements ClientSpeechProvider {
   readonly name = "browser";
   private recognition: SpeechRecognitionType | null = null;
+  private isRecording = false;
 
   /**
    * Track the highest result index we've already committed as final.
@@ -83,6 +84,7 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
     this.lastCommittedFinalIndex = -1;
     this.lastFinalText = "";
     this.sessionId = crypto.randomUUID();
+    this.isRecording = true;
 
     const SpeechRec =
       (window as any).SpeechRecognition ||
@@ -90,8 +92,8 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
 
     this.recognition = new SpeechRec();
     this.recognition.lang = config?.language || "en-IN";
-    this.recognition.continuous = config?.continuous ?? false;
-    this.recognition.interimResults = config?.interimResults ?? true;
+    this.recognition.continuous = true;
+    this.recognition.interimResults = true;
 
     const currentSessionId = this.sessionId;
 
@@ -125,7 +127,7 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
             this.onResult?.(trimmed, true);
           }
         } else {
-          // For interim results, only use the LATEST one (replace, don't append)
+          // For interim results, only use the LATEST one
           latestInterim = transcript;
         }
       }
@@ -140,13 +142,13 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
       if (this.sessionId !== currentSessionId) return;
 
       if (event.error === "not-allowed") {
+        this.isRecording = false;
         this.onStateChange?.("permission_denied");
         this.onError?.("Microphone permission denied");
       } else if (event.error === "no-speech") {
-        // no-speech is normal, don't treat as error
-        // The recognition may auto-restart in continuous mode
+        // no-speech is normal during pauses, don't treat as error
       } else if (event.error === "aborted") {
-        // Intentional abort, not an error
+        // Intentional abort
       } else {
         this.onStateChange?.("error");
         this.onError?.(event.error);
@@ -155,19 +157,38 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
 
     this.recognition.onend = () => {
       if (this.sessionId !== currentSessionId) return;
+
+      // If user is still recording and browser auto-paused after a 1s silence, restart seamlessly
+      if (this.isRecording) {
+        try {
+          this.recognition?.start();
+          return;
+        } catch {
+          // If restart fails, fallback to idle
+        }
+      }
       this.onStateChange?.("idle");
     };
 
-    this.recognition.start();
-  }
-
-  stop(): void {
-    if (this.recognition) {
-      this.recognition.stop();
+    try {
+      this.recognition.start();
+    } catch (err) {
+      console.warn("[Speech] recognition.start error:", err);
     }
   }
 
+  stop(): void {
+    this.isRecording = false;
+    if (this.recognition) {
+      try {
+        this.recognition.stop();
+      } catch { /* ignore */ }
+    }
+    this.onStateChange?.("idle");
+  }
+
   abort(): void {
+    this.isRecording = false;
     const rec = this.recognition;
     this.recognition = null;
     this.sessionId = null;

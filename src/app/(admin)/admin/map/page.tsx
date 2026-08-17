@@ -106,6 +106,7 @@ export default function AdminMapPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCoords, setSelectedCoords] = useState<[number, number] | null>(NAGPUR_CENTER);
   const [showLegend, setShowLegend] = useState(true);
+  const [showRecentFeed, setShowRecentFeed] = useState(true);
 
   /* Load map data from /api/admin/map-data */
   useEffect(() => {
@@ -356,8 +357,87 @@ export default function AdminMapPage() {
               <span>📍</span>
               <span>10 NMC Zones</span>
             </button>
+
+            <div className="w-[1px] h-4 bg-border mx-1" />
+
+            <button
+              onClick={() => setShowRecentFeed(!showRecentFeed)}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                showRecentFeed ? "bg-rose-600 text-white shadow-sm" : "text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40"
+              }`}
+            >
+              <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+              <span>Live Reports ({incidents.slice(0, 10).length})</span>
+            </button>
           </div>
         </div>
+
+        {/* ─── Floating Top 10 Recent Incident Triage Drawer ─── */}
+        {showRecentFeed && (
+          <div className="absolute top-16 left-4 z-10 w-80 sm:w-96 max-h-[calc(100vh-13rem)] bg-surface-0/95 backdrop-blur-md border border-border rounded-3xl p-3.5 shadow-2xl overflow-hidden flex flex-col pointer-events-auto animate-fadeIn">
+            <div className="flex items-center justify-between border-b border-border pb-2 px-1">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
+                <span className="text-xs font-bold uppercase tracking-wider text-text-primary">
+                  Live Recent Reports (Top 10)
+                </span>
+              </div>
+              <button
+                onClick={() => setShowRecentFeed(false)}
+                className="text-text-tertiary hover:text-text-primary text-xs font-bold px-1.5 py-0.5 rounded cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2 pt-2.5 pr-1">
+              {incidents.length === 0 && (
+                <div className="text-center py-8 text-xs text-text-tertiary">
+                  No active incidents recorded
+                </div>
+              )}
+              {incidents.slice(0, 10).map((inc) => (
+                <button
+                  key={inc.id}
+                  onClick={() => setSelectedCoords([inc.latitude, inc.longitude])}
+                  className="w-full p-2.5 rounded-2xl bg-surface-1 hover:bg-accent/10 border border-border hover:border-accent/40 text-left transition-all group cursor-pointer shadow-2xs"
+                >
+                  <div className="flex items-center justify-between gap-1.5 mb-1">
+                    <span className="text-[10px] font-mono font-bold text-accent bg-accent/10 px-2 py-0.5 rounded-md">
+                      {inc.publicReference}
+                    </span>
+                    <span
+                      className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${
+                        inc.severity === "CRITICAL" || inc.isEmergency
+                          ? "bg-rose-500/20 text-rose-600 border border-rose-500/30"
+                          : inc.severity === "HIGH"
+                          ? "bg-orange-500/20 text-orange-600 border border-orange-500/30"
+                          : inc.severity === "MEDIUM"
+                          ? "bg-amber-500/20 text-amber-600 border border-amber-500/30"
+                          : "bg-emerald-500/20 text-emerald-600 border border-emerald-500/30"
+                      }`}
+                    >
+                      {inc.severity || "NORMAL"}
+                    </span>
+                  </div>
+
+                  <p className="text-xs font-bold text-text-primary group-hover:text-accent line-clamp-1 leading-snug">
+                    {inc.title}
+                  </p>
+
+                  <div className="flex items-center justify-between text-[10px] text-text-tertiary mt-1.5 pt-1 border-t border-border/50">
+                    <span className="truncate max-w-[170px]">
+                      📍 {inc.locationText || `${inc.latitude.toFixed(4)}, ${inc.longitude.toFixed(4)}`}
+                    </span>
+                    <span className="font-bold text-accent group-hover:underline flex items-center gap-0.5">
+                      Locate on Map 🎯
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* ─── Floating Interactive Legend Panel ─── */}
         {showLegend && (

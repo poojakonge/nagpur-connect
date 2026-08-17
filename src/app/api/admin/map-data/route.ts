@@ -1,7 +1,7 @@
 /* ════════════════════════════════════════════════════════
    GET /api/admin/map-data
    Returns all data needed for the admin map:
-   - Real incidents with coordinates (from TiDB)
+   - Real incidents with coordinates (from TiDB) — Latest first
    - All GeoJSON facilities (from Geo Engine)
    - Zone boundaries
    ════════════════════════════════════════════════════════ */
@@ -14,6 +14,8 @@ interface IncidentRow {
   id: string;
   public_reference: string;
   title: string | null;
+  citizen_summary: string | null;
+  location_text: string | null;
   severity: string | null;
   status: string;
   category_slug: string | null;
@@ -28,12 +30,29 @@ interface DeptRow {
   department_name: string;
 }
 
+function deriveTitle(i: IncidentRow): string {
+  if (i.title && i.title.trim() && !i.title.toLowerCase().includes("untitled")) {
+    return i.title.trim();
+  }
+  if (i.citizen_summary && i.citizen_summary.trim()) {
+    const s = i.citizen_summary.trim();
+    return s.length > 65 ? s.slice(0, 62) + "..." : s;
+  }
+  if (i.category_slug) {
+    return i.category_slug
+      .split("_")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
+  }
+  return "Civic Report";
+}
+
 export async function GET() {
   try {
-    // Fetch incidents that have coordinates
+    // Fetch incidents that have coordinates — Latest first
     const incidents = await query<IncidentRow>(
-      `SELECT id, public_reference, title, severity, status,
-              category_slug, latitude, longitude, is_emergency, created_at
+      `SELECT id, public_reference, title, citizen_summary, location_text,
+              severity, status, category_slug, latitude, longitude, is_emergency, created_at
        FROM incidents
        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
        ORDER BY created_at DESC
@@ -64,10 +83,12 @@ export async function GET() {
       incidents: incidents.map((i) => ({
         id: i.id,
         publicReference: i.public_reference,
-        title: i.title,
-        severity: i.severity,
+        title: deriveTitle(i),
+        summary: i.citizen_summary || i.title || "Civic report",
+        locationText: i.location_text || `${Number(i.latitude).toFixed(4)}, ${Number(i.longitude).toFixed(4)}`,
+        severity: i.severity || "MEDIUM",
         status: i.status,
-        category: i.category_slug,
+        category: i.category_slug ? i.category_slug.replace(/_/g, " ") : "Incident",
         latitude: Number(i.latitude),
         longitude: Number(i.longitude),
         isEmergency: !!i.is_emergency,
@@ -104,7 +125,7 @@ export async function GET() {
   } catch (err) {
     console.error("[API] /admin/map-data error:", err);
     return NextResponse.json(
-      { error: { code: "MAP_DATA_FAILED", message: "Failed to load map data." } },
+      { error: { code: "FETCH_FAILED", message: "Failed to fetch map data." } },
       { status: 500 }
     );
   }

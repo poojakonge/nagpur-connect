@@ -20,6 +20,8 @@ interface IncidentDetail {
   title: string | null;
   citizenSummary: string | null;
   locationText: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   isEmergency: boolean;
   privacyLevel: string;
   createdAt: string;
@@ -55,9 +57,19 @@ interface AIConversationItem {
   isRequired: boolean;
 }
 
+interface MediaItem {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  storageUrl: string | null;
+  purpose: string;
+}
+
 const STATUS_BADGE: Record<string, { label: string; className: string }> = {
   CONFIRMED: { label: "Submitted", className: "bg-accent/10 text-accent border-accent/20" },
   ROUTED: { label: "Routed", className: "bg-accent/10 text-accent border-accent/20" },
+  ASSIGNED: { label: "Assigned", className: "bg-accent/10 text-accent border-accent/20" },
   IN_PROGRESS: { label: "In Progress", className: "bg-warning-bg text-warning border-warning-border" },
   PENDING_VERIFICATION: { label: "Verifying", className: "bg-warning-bg text-warning border-warning-border" },
   RESOLVED: { label: "Resolved", className: "bg-success-bg text-success border-success-border" },
@@ -72,6 +84,8 @@ export default function TrackingPage() {
   const [incident, setIncident] = useState<IncidentDetail | null>(null);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const [media, setMedia] = useState<MediaItem[]>([]);
+  const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null);
   const [aiConversation, setAiConversation] = useState<AIConversationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -94,6 +108,7 @@ export default function TrackingPage() {
         setIncident(data.incident);
         setDepartments(data.departments || []);
         setTimeline(data.timeline || []);
+        setMedia(data.media || []);
         setAiConversation(data.aiConversation || []);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Something went wrong");
@@ -170,31 +185,71 @@ export default function TrackingPage() {
       <main className="max-w-3xl mx-auto px-4 pb-8">
         {/* Report card */}
         <div className="bg-surface-0 border border-border rounded-2xl overflow-hidden mt-4 shadow-sm">
-          {/* Map placeholder */}
-          <div className="h-40 bg-surface-2 flex items-center justify-center relative">
-            {incident.locationText && (
-              <div className="absolute top-3 left-3 glass px-3 py-1.5 rounded-full flex items-center gap-1.5">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent">
-                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" />
-                  <circle cx="12" cy="10" r="3" />
-                </svg>
-                <span className="text-xs font-medium text-text-primary">{incident.locationText}</span>
+          {/* Hero Banner — Uploaded Photo or Live Interactive OSM Location Map */}
+          {media && media.length > 0 && media[0].storageUrl ? (
+            <div
+              className="relative h-56 bg-surface-2 overflow-hidden cursor-pointer group"
+              onClick={() => setSelectedPhoto(media[0].storageUrl)}
+            >
+              <img
+                src={media[0].storageUrl}
+                alt="Citizen Evidence"
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-black/30" />
+              {incident.locationText && (
+                <div className="absolute top-3 left-3 bg-black/60 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 border border-white/20">
+                  <span>📍</span> {incident.locationText}
+                </div>
+              )}
+              <div className="absolute bottom-3 right-3 bg-black/70 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 border border-white/20">
+                <span>📷</span> {media.length} Photo{media.length > 1 ? "s" : ""} Attached
               </div>
-            )}
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="text-text-tertiary/30">
-              <rect x="1" y="3" width="15" height="13" rx="1" />
-              <path d="M16 8h4a1 1 0 011 1v9a1 1 0 01-1 1H5a1 1 0 01-1-1v-3" />
-            </svg>
-          </div>
+              <div className="absolute bottom-3 left-3 text-white/90 text-xs font-medium">
+                Click to enlarge photo 🔍
+              </div>
+            </div>
+          ) : (
+            <div className="relative h-48 bg-slate-950 overflow-hidden">
+              {incident.latitude && incident.longitude ? (
+                <iframe
+                  title="Nagpur Incident Location Map"
+                  src={`https://www.openstreetmap.org/export/embed.html?bbox=${Number(incident.longitude) - 0.007}%2C${Number(incident.latitude) - 0.005}%2C${Number(incident.longitude) + 0.007}%2C${Number(incident.latitude) + 0.005}&layer=mapnik&marker=${incident.latitude}%2C${incident.longitude}`}
+                  className="w-full h-full border-0 pointer-events-none opacity-90"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="w-full h-full bg-gradient-to-r from-blue-900 via-indigo-950 to-slate-900 flex items-center justify-center">
+                  <span className="text-white text-sm font-semibold">Nagpur Civic Jurisdiction</span>
+                </div>
+              )}
+              <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-black/20" />
+              <div className="absolute top-3 left-3 bg-black/70 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 border border-white/20">
+                <span>📍</span> {incident.locationText || "Nagpur Civic Location Verified"}
+              </div>
+              <a
+                href={`https://www.google.com/maps?q=${incident.latitude || 21.1458},${incident.longitude || 79.0882}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="absolute bottom-3 right-3 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1 shadow-md transition-all"
+              >
+                <span>View on Google Maps ↗</span>
+              </a>
+            </div>
+          )}
 
-          <div className="p-4">
+          <div className="p-5">
             <div className="flex items-start justify-between mb-2">
-              <h2 className="text-lg font-bold text-text-primary flex-1">{incident.title || "Untitled Report"}</h2>
-              <span className={`ml-3 px-2.5 py-0.5 text-xs font-semibold rounded-full border whitespace-nowrap ${badge.className}`}>
+              <h2 className="text-xl font-extrabold text-text-primary flex-1 leading-snug">
+                {incident.title && incident.title.trim() && !incident.title.toLowerCase().includes("untitled")
+                  ? incident.title
+                  : (incident.citizenSummary || "Civic Incident Report")}
+              </h2>
+              <span className={`ml-3 px-3 py-1 text-xs font-bold rounded-full border whitespace-nowrap ${badge.className}`}>
                 {badge.label}
               </span>
             </div>
-            <p className="text-sm text-text-tertiary">Report ID: #{incident.publicReference}</p>
+            <p className="text-xs font-mono font-bold text-text-tertiary">Report ID: #{incident.publicReference}</p>
 
             {incident.citizenSummary && (
               <p className="text-sm text-text-secondary mt-3 leading-relaxed">
@@ -292,14 +347,75 @@ export default function TrackingPage() {
           </section>
         )}
 
+        {/* Attached Photos & Evidence */}
+        {media.length > 0 && (
+          <section className="mt-6">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-bold text-text-primary">Uploaded Photos & Evidence</h2>
+              <span className="text-xs font-semibold text-accent">{media.length} Attached</span>
+            </div>
+            <div className="bg-surface-0 border border-border rounded-2xl p-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {media.map((m, idx) => (
+                  <div
+                    key={m.id || idx}
+                    onClick={() => m.storageUrl && setSelectedPhoto(m.storageUrl)}
+                    className="group relative rounded-xl overflow-hidden border border-border bg-surface-1 cursor-pointer shadow-xs hover:shadow-md transition-all"
+                  >
+                    {m.storageUrl ? (
+                      <div className="aspect-square">
+                        <img
+                          src={m.storageUrl}
+                          alt={m.fileName}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                        />
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-bold">
+                          View Photo 🔍
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="aspect-square flex flex-col items-center justify-center p-2 text-center text-text-tertiary">
+                        <span className="text-2xl">📎</span>
+                        <span className="text-[10px] font-mono truncate w-full mt-1">{m.fileName}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Timeline */}
         <section className="mt-6">
           <h2 className="text-lg font-bold text-text-primary mb-4">Tracking Timeline</h2>
           <div className="bg-surface-0 border border-border rounded-2xl p-4">
-            <TrackingTimeline events={timeline} />
+            <TrackingTimeline events={timeline} currentStatus={incident.status} />
           </div>
         </section>
       </main>
+
+      {/* Lightbox Photo Preview */}
+      {selectedPhoto && (
+        <div
+          className="fixed inset-0 z-[var(--z-toast)] bg-black/85 flex items-center justify-center p-4"
+          onClick={() => setSelectedPhoto(null)}
+        >
+          <div className="relative max-w-3xl max-h-[85vh] bg-surface-0 rounded-2xl overflow-hidden shadow-2xl border border-border">
+            <img
+              src={selectedPhoto}
+              alt="Enlarged evidence"
+              className="max-w-full max-h-[80vh] object-contain mx-auto"
+            />
+            <button
+              onClick={() => setSelectedPhoto(null)}
+              className="absolute top-3 right-3 bg-black/60 text-white w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold hover:bg-black"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

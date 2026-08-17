@@ -310,13 +310,15 @@ interface DialogProps {
   title?: string;
   description?: string;
   children: React.ReactNode;
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "md" | "lg" | "xl" | "2xl";
 }
 
 const dialogSizes = {
   sm: "max-w-sm",
   md: "max-w-lg",
   lg: "max-w-2xl",
+  xl: "max-w-3xl",
+  "2xl": "max-w-4xl",
 };
 
 export function Dialog({

@@ -20,7 +20,7 @@
 
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import {
   BrowserSpeechProvider,
   type ClientSpeechProvider,
@@ -60,7 +60,7 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
   const [error, setError] = useState<string | null>(null);
   const [providerName, setProviderName] = useState("assemblyai");
   // Stable across renders — computed once on mount
-  const isMobile = useRef(detectMobile()).current;
+  const isMobile = useMemo(() => detectMobile(), []);
 
   const providerRef = useRef<ClientSpeechProvider | null>(null);
 
@@ -85,20 +85,33 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
         const trimmed = text.trim();
         if (!trimmed) return;
 
-        // The AssemblyAI v3 provider emits the FULL accumulated correct transcript
-        // on each final (end_of_turn=true) Turn event. We simply replace the
-        // displayed transcript — never append to a segments array — because the
-        // provider already handles multi-turn accumulation internally.
-        committedSegmentsRef.current = [trimmed];
-        setTranscript(trimmed);
-        setInterimTranscript("");
+        if (provider.name === "assemblyai") {
+          // AssemblyAI v3 emits full accumulated turn text
+          committedSegmentsRef.current = [trimmed];
+          setTranscript(trimmed);
+          setInterimTranscript("");
+        } else {
+          // Browser Web Speech API & Mobile Recorder emit separate sentences per pause!
+          // Append new segment so speech after 1s pauses is seamlessly preserved
+          const existing = committedSegmentsRef.current;
+          if (existing.length === 0 || existing[existing.length - 1] !== trimmed) {
+            committedSegmentsRef.current = [...existing, trimmed];
+          }
+          const accumulated = committedSegmentsRef.current.join(" ");
+          setTranscript(accumulated);
+          setInterimTranscript("");
+        }
       } else {
-        // Partial: provider sends committed + current-partial combined for display.
-        // Replace previous interim — do NOT append.
-        setInterimTranscript(text);
+        // Partial: show accumulated committed text + current interim
+        if (provider.name === "assemblyai") {
+          setInterimTranscript(text);
+        } else {
+          const committed = committedSegmentsRef.current.join(" ");
+          const displayInterim = committed ? `${committed} ${text}` : text;
+          setInterimTranscript(displayInterim);
+        }
       }
     };
-
 
     provider.onError = (err: string) => {
       console.warn(`[Speech] ${provider.name} error:`, err);

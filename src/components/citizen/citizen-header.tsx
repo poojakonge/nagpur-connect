@@ -52,9 +52,12 @@ export function CitizenHeader() {
           {/* Brand */}
           <button
             onClick={() => router.push("/dashboard")}
-            className="text-lg font-bold tracking-tight text-accent cursor-pointer"
+            className="flex items-center gap-2.5 text-lg font-bold tracking-tight text-text-primary cursor-pointer hover:opacity-90 transition-opacity"
           >
-            Nagpur Connect
+            <div className="w-7 h-7 rounded-lg overflow-hidden flex items-center justify-center border border-border/50 shadow-xs bg-transparent">
+              <img src="/favicon.png" alt="Nagpur Connect" className="w-full h-full object-contain rounded-lg" />
+            </div>
+            <span className="text-accent">Nagpur Connect</span>
           </button>
 
           {/* Desktop nav */}

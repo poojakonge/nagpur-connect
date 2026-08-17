@@ -60,8 +60,8 @@ export default function DepartmentLayout({
   const SidebarContent = () => (
     <>
       <div className="flex items-center gap-3 px-5 py-5 border-b border-slate-200">
-        <div className="w-9 h-9 rounded-xl bg-accent flex items-center justify-center shadow-xs">
-          <BuildingIcon size={18} className="text-white" />
+        <div className="w-9 h-9 rounded-xl overflow-hidden flex items-center justify-center shadow-xs border border-slate-200 bg-transparent">
+          <img src="/favicon.png" alt="Nagpur Connect" className="w-full h-full object-contain rounded-xl" />
         </div>
         <div>
           <span className="font-display text-sm font-extrabold text-slate-900 block">Nagpur Connect</span>
@@ -151,7 +151,7 @@ export default function DepartmentLayout({
           <div className="w-8" />
         </header>
 
-        <main className="flex-1 p-4 lg:p-8 overflow-x-hidden">{children}</main>
+        <main className="flex-1 p-5 md:p-7 lg:p-8 w-full max-w-[1700px] overflow-x-hidden">{children}</main>
       </div>
     </div>
   );

@@ -18,9 +18,9 @@ export async function GET() {
     }
 
     // Use the v3 Streaming API to create a temporary token
-    // expires_in is in seconds; 300 = 5 minutes
+    // expires_in_seconds is in seconds; 300 = 5 minutes
     const res = await fetch(
-      "https://api.assemblyai.com/v3/token?expires_in=300",
+      "https://streaming.assemblyai.com/v3/token?expires_in_seconds=300",
       {
         method: "GET",
         headers: {

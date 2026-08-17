@@ -29,6 +29,7 @@ interface APIIncident {
   status?: string;
   routingReason?: string | null;
   citizenSummary?: string | null;
+  category?: string;
   summary?: string | null;
   locationText?: string | null;
   location?: string | null;
@@ -47,12 +48,20 @@ interface APIIncident {
 }
 
 function mapToIncidentData(inc: APIIncident): IncidentData {
+  const cleanTitle = inc.title && inc.title.trim() && !inc.title.toLowerCase().includes("untitled")
+    ? inc.title.trim()
+    : "";
+  const summaryText = inc.citizenSummary || inc.summary || inc.routingReason || "Civic report submitted by citizen";
+  const displayTitle = cleanTitle || (summaryText.length > 70 ? summaryText.slice(0, 67) + "..." : summaryText);
+  const categoryLabel = inc.category || "Civic Incident";
+
   return {
     id: inc.incidentId || inc.id || "",
     trackingId: inc.publicReference || inc.trackingId || "",
-    category: inc.title || "Untitled Report",
-    summary: inc.citizenSummary || inc.summary || inc.routingReason || "No description available",
-    location: inc.locationText || inc.location || "Nagpur, Maharashtra",
+    title: displayTitle,
+    category: categoryLabel,
+    summary: summaryText,
+    location: inc.locationText || inc.location || "Nagpur Jurisdiction",
     timestamp: inc.createdAt || inc.timestamp || new Date().toISOString(),
     status: inc.deptStatus || inc.status || "ROUTED",
     priority: inc.priorityScore || inc.priority || 0,
@@ -224,24 +233,46 @@ export default function IncidentDeskPage({
         />
       </div>
 
-      {/* Feed */}
-      <IncidentFeed
-        incidents={incidents}
-        onIncidentClick={(id) => {
-          const inc = incidents.find((i) => i.id === id);
-          if (inc) setSelectedIncident(inc);
-        }}
-        loading={loading}
-      />
+      {/* Main Split Layout: Left Feed Queue & Right Live Command Console */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Left: Queue Feed */}
+        <div className={selectedIncident ? "lg:col-span-5 space-y-3" : "lg:col-span-12 space-y-3"}>
+          <div className="flex items-center justify-between px-1">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              Department Queue ({incidents.length})
+            </span>
+            {selectedIncident && (
+              <button
+                onClick={() => setSelectedIncident(null)}
+                className="text-xs font-bold text-slate-500 hover:text-slate-900 cursor-pointer"
+              >
+                Show Full Width ⛶
+              </button>
+            )}
+          </div>
+          <IncidentFeed
+            incidents={incidents}
+            onIncidentClick={(id) => {
+              const inc = incidents.find((i) => i.id === id);
+              if (inc) setSelectedIncident(inc);
+            }}
+            loading={loading}
+          />
+        </div>
 
-      {/* Detail Modal */}
-      <IncidentDetail
-        incident={selectedIncident}
-        onClose={() => setSelectedIncident(null)}
-        onAccept={handleAccept}
-        onResolve={handleResolve}
-        onAssignTask={handleAssignTask}
-      />
+        {/* Right: Active Live Incident Command & Dispatch Console */}
+        {selectedIncident && (
+          <div className="lg:col-span-7 sticky top-4 animate-fadeIn">
+            <IncidentDetail
+              incident={selectedIncident}
+              onClose={() => setSelectedIncident(null)}
+              onAccept={handleAccept}
+              onResolve={handleResolve}
+              onAssignTask={handleAssignTask}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

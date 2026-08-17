@@ -60,8 +60,8 @@ export default function AdminLayout({
       {/* Logo */}
       <div className="flex items-center justify-between px-4 py-5 border-b border-divider">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-accent flex items-center justify-center shadow-md">
-            <ShieldIcon size={16} className="text-white" />
+          <div className="w-8 h-8 rounded-xl overflow-hidden flex items-center justify-center shadow-xs border border-border/40 bg-transparent">
+            <img src="/favicon.png" alt="Nagpur Connect" className="w-full h-full object-contain rounded-xl" />
           </div>
           <div>
             <span className="text-sm font-bold block text-text-primary">Nagpur Connect</span>

@@ -15,6 +15,8 @@ export interface IncidentMarkerData {
   id: string;
   publicReference: string;
   title: string | null;
+  summary?: string | null;
+  locationText?: string | null;
   severity: string | null;
   status: string;
   category: string | null;

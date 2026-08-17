@@ -21,8 +21,8 @@ export function Navbar() {
           <div className="flex items-center justify-between h-16">
             {/* Logo */}
             <Link href="/" className="flex items-center gap-2.5 group">
-              <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center">
-                <ShieldIcon size={18} className="text-white" />
+              <div className="w-8 h-8 rounded-xl overflow-hidden flex items-center justify-center border border-border/50 shadow-xs bg-transparent">
+                <img src="/favicon.png" alt="Nagpur Connect" className="w-full h-full object-contain rounded-xl" />
               </div>
               <span className="text-base font-semibold text-text-primary tracking-tight group-hover:text-accent transition-colors">
                 Nagpur Connect

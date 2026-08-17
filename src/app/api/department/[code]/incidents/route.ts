@@ -20,6 +20,8 @@ interface DeptIncidentRow {
   assigned_worker_name: string | null;
   action_notes: string | null;
   public_reference: string;
+  category_slug: string | null;
+  subcategory_slug: string | null;
   title: string | null;
   severity: string | null;
   priority_score: number | null;
@@ -31,6 +33,31 @@ interface DeptIncidentRow {
   is_emergency: number;
   privacy_level: string | null;
   created_at: string;
+}
+
+function formatCategoryName(slug: string | null): string {
+  if (!slug) return "Civic Report";
+  return slug
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function deriveIncidentTitle(r: DeptIncidentRow): string {
+  if (r.title && r.title.trim() && !r.title.toLowerCase().includes("untitled")) {
+    return r.title.trim();
+  }
+  if (r.citizen_summary && r.citizen_summary.trim()) {
+    const s = r.citizen_summary.trim();
+    return s.length > 75 ? s.slice(0, 72) + "..." : s;
+  }
+  if (r.subcategory_slug) {
+    return formatCategoryName(r.subcategory_slug);
+  }
+  if (r.category_slug) {
+    return formatCategoryName(r.category_slug);
+  }
+  return `${r.department_name} Incident`;
 }
 
 interface MediaRow {
@@ -96,19 +123,20 @@ export async function GET(
     );
     const total = Number(countRows[0]?.cnt || 0);
 
-    // Fetch Incidents
+    // Fetch Incidents — Latest first
     const rows = await query<DeptIncidentRow>(
       `SELECT id.incident_id, id.department_code, id.department_name,
               id.status AS dept_status, id.routing_reason,
               id.assigned_worker_id, id.assigned_worker_name, id.action_notes,
-              i.public_reference, i.title, i.severity, i.priority_score,
+              i.public_reference, i.category_slug, i.subcategory_slug, i.title,
+              i.severity, i.priority_score,
               i.status AS incident_status, i.citizen_summary,
               i.location_text, i.latitude, i.longitude, i.is_emergency,
               i.privacy_level, i.created_at
        FROM incident_departments id
        JOIN incidents i ON i.id = id.incident_id
        ${whereClause}
-       ORDER BY i.priority_score DESC, i.created_at DESC
+       ORDER BY i.created_at DESC
        LIMIT ${limit} OFFSET ${offset}`,
       queryParams
     );
@@ -140,34 +168,39 @@ export async function GET(
       success: true,
       departmentCode: code,
       departmentName: rows[0]?.department_name || code,
-      incidents: rows.map((r) => ({
-        id: r.incident_id,
-        trackingId: r.public_reference,
-        category: r.title || "Incident Report",
-        summary: r.citizen_summary || r.title || "No details provided",
-        status: r.dept_status,
-        incidentStatus: r.incident_status,
-        priority: Number(r.priority_score || 50),
-        severity: r.severity || "MEDIUM",
-        location: r.location_text || "Nagpur Jurisdiction",
-        latitude: r.latitude,
-        longitude: r.longitude,
-        isEmergency: !!r.is_emergency,
-        privacyLevel: r.privacy_level || "PUBLIC",
-        routingReason: r.routing_reason,
-        assignedTo: r.assigned_worker_name || (r.assigned_worker_id ? `Worker #${r.assigned_worker_id}` : undefined),
-        assignedWorkerId: r.assigned_worker_id || undefined,
-        actionNotes: r.action_notes || undefined,
-        timestamp: r.created_at,
-        media: (mediaByIncident[r.incident_id] || []).map((m) => ({
-          id: m.id,
-          fileName: m.file_name,
-          mimeType: m.mime_type,
-          fileSize: m.file_size,
-          storageUrl: m.storage_url,
-          purpose: m.purpose,
-        })),
-      })),
+      incidents: rows.map((r) => {
+        const title = deriveIncidentTitle(r);
+        const categoryName = formatCategoryName(r.subcategory_slug || r.category_slug || r.department_code);
+        return {
+          id: r.incident_id,
+          trackingId: r.public_reference,
+          title,
+          category: categoryName,
+          summary: r.citizen_summary || r.title || r.routing_reason || "No details provided",
+          status: r.dept_status,
+          incidentStatus: r.incident_status,
+          priority: Number(r.priority_score || 50),
+          severity: r.severity || "MEDIUM",
+          location: r.location_text || "Nagpur Jurisdiction",
+          latitude: r.latitude,
+          longitude: r.longitude,
+          isEmergency: !!r.is_emergency,
+          privacyLevel: r.privacy_level || "PUBLIC",
+          routingReason: r.routing_reason,
+          assignedTo: r.assigned_worker_name || (r.assigned_worker_id ? `Worker #${r.assigned_worker_id}` : undefined),
+          assignedWorkerId: r.assigned_worker_id || undefined,
+          actionNotes: r.action_notes || undefined,
+          timestamp: r.created_at,
+          media: (mediaByIncident[r.incident_id] || []).map((m) => ({
+            id: m.id,
+            fileName: m.file_name,
+            mimeType: m.mime_type,
+            fileSize: m.file_size,
+            storageUrl: m.storage_url,
+            purpose: m.purpose,
+          })),
+        };
+      }),
       pagination: {
         page,
         limit,
@@ -321,6 +354,8 @@ export async function PATCH(
         publicReference: currentRecord.public_reference,
         newStatus: toStatus,
         reason: historyReason,
+        departmentName: currentRecord.department_name,
+        workerName: workerName || undefined,
       }).catch(() => {});
     }
 

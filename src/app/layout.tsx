@@ -19,15 +19,26 @@ const jakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://nagpur-connect.vercel.app"),
   title: "Nagpur Connect — AI-Powered Civic Response",
   description:
     "Report civic issues and emergencies in Nagpur. AI-powered platform that understands your problem and connects you with the right government departments.",
   keywords: ["Nagpur", "civic", "emergency", "AI", "government", "report"],
   authors: [{ name: "Nagpur Connect" }],
+  icons: {
+    icon: [
+      { url: "/favicon.png", type: "image/png" },
+      { url: "/favicon.jpeg", type: "image/jpeg" },
+      { url: "/favicon.ico" },
+    ],
+    shortcut: "/favicon.png",
+    apple: "/apple-touch-icon.png",
+  },
   openGraph: {
     title: "Nagpur Connect",
     description: "AI-powered civic and emergency response coordination for Nagpur",
     type: "website",
+    images: [{ url: "/favicon.png" }],
   },
 };
 

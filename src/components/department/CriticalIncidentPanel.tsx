@@ -39,9 +39,9 @@ export function CriticalIncidentPanel({
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-        {displayIncidents.map((incident) => (
+        {displayIncidents.map((incident, idx) => (
           <div
-            key={incident.id}
+            key={incident.id || incident.trackingId || `crit-${idx}`}
             className="rounded-xl p-4 bg-white border border-slate-200 shadow-xs hover:shadow-sm hover:border-slate-300 space-y-2.5 transition-all"
           >
             <div className="flex items-start justify-between gap-3">

@@ -75,6 +75,7 @@ interface MediaItem {
   mimeType: string;
   fileSize: number;
   purpose: string;
+  storageUrl?: string | null;
 }
 
 interface Conversation {
@@ -137,6 +138,7 @@ export default function AdminIncidentDetailPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusUpdating, setStatusUpdating] = useState(false);
+  const [activePhoto, setActivePhoto] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -316,6 +318,46 @@ export default function AdminIncidentDetailPage({
                   </a>
                 </div>
               )}
+            </Card>
+          )}
+
+          {/* Citizen Visual Evidence / Media Gallery */}
+          {media.length > 0 && (
+            <Card padding="md" className="border-emerald-500/20 bg-emerald-500/5">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-[10px] text-emerald-600 dark:text-emerald-400 uppercase tracking-wider font-bold flex items-center gap-1.5">
+                  <span>📷</span> Citizen Attached Evidence & Photos ({media.length})
+                </p>
+                <span className="text-[10px] text-text-tertiary">Click to enlarge</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                {media.map((m, idx) => (
+                  <div
+                    key={m.id || idx}
+                    onClick={() => m.storageUrl && setActivePhoto(m.storageUrl)}
+                    className="group relative rounded-xl overflow-hidden border border-border bg-surface-1 shadow-xs hover:shadow-md transition-all cursor-pointer"
+                  >
+                    {m.storageUrl ? (
+                      <div className="aspect-square">
+                        <img
+                          src={m.storageUrl}
+                          alt={m.fileName}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                        />
+                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center p-2 text-center text-white">
+                          <span className="text-xs font-bold">🔍 Enlarge</span>
+                          <span className="text-[9px] font-mono truncate w-full mt-1">{m.fileName}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="aspect-square flex flex-col items-center justify-center p-2 text-center text-text-tertiary bg-surface-1">
+                        <span className="text-2xl">📎</span>
+                        <span className="text-[10px] font-mono truncate w-full mt-1">{m.fileName}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             </Card>
           )}
 
@@ -549,6 +591,28 @@ export default function AdminIncidentDetailPage({
           </Card>
         </div>
       </div>
+
+      {/* Lightbox photo modal */}
+      {activePhoto && (
+        <div
+          className="fixed inset-0 z-[var(--z-toast)] bg-black/85 flex items-center justify-center p-4"
+          onClick={() => setActivePhoto(null)}
+        >
+          <div className="relative max-w-4xl max-h-[90vh] bg-surface-1 rounded-2xl overflow-hidden shadow-2xl border border-border">
+            <img
+              src={activePhoto}
+              alt="Enlarged visual evidence"
+              className="max-w-full max-h-[85vh] object-contain mx-auto"
+            />
+            <button
+              onClick={() => setActivePhoto(null)}
+              className="absolute top-3 right-3 bg-black/70 text-white w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold hover:bg-black"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
