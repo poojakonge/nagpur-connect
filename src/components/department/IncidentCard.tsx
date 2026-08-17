@@ -14,6 +14,12 @@ export interface IncidentData {
   priority: number;
   privacyLevel: "PUBLIC" | "RESTRICTED" | "PRIVATE";
   assignedTo?: string;
+  media?: Array<{
+    id: string;
+    fileName: string;
+    mimeType: string;
+    storageUrl: string | null;
+  }>;
 }
 
 interface IncidentCardProps {

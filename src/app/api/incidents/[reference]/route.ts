@@ -56,6 +56,16 @@ interface ConversationRow {
   sort_order: number;
 }
 
+interface MediaRow {
+  id: string;
+  file_name: string;
+  mime_type: string;
+  file_size: number;
+  storage_url: string | null;
+  purpose: string;
+  created_at: string;
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ reference: string }> }
@@ -184,6 +194,20 @@ export async function GET(
       }
     } catch { /* invalid JSON */ }
 
+    // Fetch incident media attachments
+    let media: MediaRow[] = [];
+    try {
+      media = await query<MediaRow>(
+        `SELECT id, file_name, mime_type, file_size, storage_url, purpose, created_at
+         FROM incident_media
+         WHERE incident_id = ?
+         ORDER BY created_at ASC`,
+        [incident.id]
+      );
+    } catch {
+      // Table may not exist yet — non-fatal
+    }
+
     // Build response — citizen vs admin get different data
     const baseResponse = {
       publicReference: incident.public_reference,
@@ -230,6 +254,15 @@ export async function GET(
         status: h.to_status,
         description: h.reason,
         timestamp: h.created_at,
+      })),
+      media: media.map((m) => ({
+        id: m.id,
+        fileName: m.file_name,
+        mimeType: m.mime_type,
+        fileSize: m.file_size,
+        storageUrl: m.storage_url,
+        purpose: m.purpose,
+        createdAt: m.created_at,
       })),
       aiConversation: conversations.map((c) => ({
         questionId: c.question_id,

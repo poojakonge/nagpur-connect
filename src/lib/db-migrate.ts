@@ -192,12 +192,20 @@ const ALTER_MIGRATIONS: Array<{ sql: string; description: string }> = [
     description: "Add emergency_contact to citizens",
   },
   {
-    sql: `ALTER TABLE citizens ADD COLUMN bio TEXT NULL AFTER emergency_contact`,
-    description: "Add bio to citizens",
+    sql: `ALTER TABLE incident_media MODIFY COLUMN storage_url LONGTEXT NULL`,
+    description: "Upgrade incident_media.storage_url to LONGTEXT for data URLs",
   },
   {
-    sql: `ALTER TABLE citizens ADD COLUMN notification_email_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER bio`,
-    description: "Add notification_email_enabled to citizens",
+    sql: `ALTER TABLE incident_departments ADD COLUMN assigned_worker_id VARCHAR(100) NULL AFTER priority_override`,
+    description: "Add assigned_worker_id to incident_departments",
+  },
+  {
+    sql: `ALTER TABLE incident_departments ADD COLUMN assigned_worker_name VARCHAR(200) NULL AFTER assigned_worker_id`,
+    description: "Add assigned_worker_name to incident_departments",
+  },
+  {
+    sql: `ALTER TABLE incident_departments ADD COLUMN action_notes TEXT NULL AFTER assigned_worker_name`,
+    description: "Add action_notes to incident_departments",
   },
 ];
 

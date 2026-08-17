@@ -106,6 +106,41 @@ export function IncidentDetail({
           </div>
         </div>
 
+        {/* Visual Evidence / Attachments */}
+        {incident.media && incident.media.length > 0 && (
+          <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+            <h4 className="text-[10px] font-bold text-slate-500 tracking-wider uppercase flex items-center gap-1.5">
+              <span>📷</span> VISUAL EVIDENCE & ATTACHMENTS ({incident.media.length})
+            </h4>
+            <div className="flex gap-3 flex-wrap pt-1">
+              {incident.media.map((item, idx) => (
+                <div
+                  key={item.id || idx}
+                  className="relative group rounded-xl overflow-hidden border border-slate-300 bg-white shadow-xs"
+                >
+                  {item.storageUrl ? (
+                    <a href={item.storageUrl} target="_blank" rel="noopener noreferrer" className="block cursor-pointer">
+                      <img
+                        src={item.storageUrl}
+                        alt={item.fileName || `Evidence ${idx + 1}`}
+                        className="w-28 h-28 object-cover group-hover:scale-105 transition-transform duration-200"
+                      />
+                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-[10px] font-bold">
+                        View Full ↗
+                      </div>
+                    </a>
+                  ) : (
+                    <div className="w-28 h-28 flex flex-col items-center justify-center p-2 text-center text-slate-400 bg-slate-100">
+                      <span className="text-xl">📎</span>
+                      <span className="text-[9px] font-mono truncate w-full mt-1">{item.fileName}</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Task Assignment Drawer/Panel */}
         {showAssignment && (
           <div className="mt-4 pt-4 border-t border-slate-200">

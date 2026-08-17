@@ -5,7 +5,7 @@
 
 "use client";
 
-import { useState, useEffect, use } from "react";
+import { useState, useEffect, useCallback, use } from "react";
 import { Badge } from "@/components/ui";
 import { DepartmentHeader } from "@/components/department/DepartmentHeader";
 import { DepartmentSubNav } from "@/components/department/DepartmentSubNav";
@@ -50,31 +50,50 @@ export default function TasksPage({
   const [loading, setLoading] = useState(true);
   const [criticalCount, setCriticalCount] = useState(0);
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      try {
-        const res = await fetch(`/api/department/${code}/tasks`);
-        if (res.ok) {
-          const d = await res.json();
-          if (d.success) {
-            setTasks(d.tasks || []);
-          }
+  const loadTasks = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/department/${code}/tasks`);
+      if (res.ok) {
+        const d = await res.json();
+        if (d.success) {
+          setTasks(d.tasks || []);
         }
-
-        const statsRes = await fetch(`/api/department/${code}/stats`);
-        if (statsRes.ok) {
-          const s = await statsRes.json();
-          if (s.success) setCriticalCount(s.kpi.critical || 0);
-        }
-      } catch (err) {
-        console.error("[Tasks] Load error:", err);
-      } finally {
-        setLoading(false);
       }
+
+      const statsRes = await fetch(`/api/department/${code}/stats`);
+      if (statsRes.ok) {
+        const s = await statsRes.json();
+        if (s.success) setCriticalCount(s.kpi.critical || 0);
+      }
+    } catch (err) {
+      console.error("[Tasks] Load error:", err);
+    } finally {
+      setLoading(false);
     }
-    load();
   }, [code]);
+
+  useEffect(() => {
+    loadTasks();
+  }, [loadTasks]);
+
+  const handleTaskAction = async (taskId: string, action: "ACCEPT" | "ASSIGN" | "RESOLVE") => {
+    try {
+      const res = await fetch(`/api/department/${code}/incidents`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          incidentId: taskId,
+          action,
+        }),
+      });
+      if (res.ok) {
+        await loadTasks();
+      }
+    } catch (err) {
+      console.error("[Tasks] Action error:", err);
+    }
+  };
 
   const grouped = COLUMNS.map((col) => ({
     ...col,
@@ -88,8 +107,6 @@ export default function TasksPage({
         departmentIcon={dept.icon}
         criticalCount={criticalCount}
       />
-
-      <DepartmentSubNav departmentCode={code} />
 
       <div className="flex items-center justify-between">
         <div>
@@ -166,6 +183,34 @@ export default function TasksPage({
                       >
                         P{task.priority}
                       </span>
+                    </div>
+
+                    {/* Quick action buttons */}
+                    <div className="pt-2">
+                      {task.status === "ROUTED" && (
+                        <button
+                          onClick={() => handleTaskAction(task.id, "ACCEPT")}
+                          className="w-full py-1 px-2 text-[10px] font-bold rounded-lg bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer"
+                        >
+                          Acknowledge & Accept →
+                        </button>
+                      )}
+                      {task.status === "ASSIGNED" && (
+                        <button
+                          onClick={() => handleTaskAction(task.id, "ASSIGN")}
+                          className="w-full py-1 px-2 text-[10px] font-bold rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors cursor-pointer"
+                        >
+                          Start Field Work →
+                        </button>
+                      )}
+                      {task.status === "IN_PROGRESS" && (
+                        <button
+                          onClick={() => handleTaskAction(task.id, "RESOLVE")}
+                          className="w-full py-1 px-2 text-[10px] font-bold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-colors cursor-pointer"
+                        >
+                          Mark as Resolved ✓
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}

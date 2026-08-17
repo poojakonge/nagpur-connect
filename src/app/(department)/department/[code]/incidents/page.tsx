@@ -16,31 +16,49 @@ import { IncidentData } from "@/components/department/IncidentCard";
 import { DEPARTMENT_REGISTRY } from "@/lib/department-registry";
 
 interface APIIncident {
-  incidentId: string;
-  publicReference: string;
+  id?: string;
+  incidentId?: string;
+  trackingId?: string;
+  publicReference?: string;
   title: string | null;
   severity: string | null;
-  priorityScore: number | null;
-  incidentStatus: string;
-  deptStatus: string;
-  routingReason: string | null;
-  citizenSummary: string | null;
-  locationText: string | null;
-  isEmergency: boolean;
-  createdAt: string;
+  priorityScore?: number | null;
+  priority?: number;
+  incidentStatus?: string;
+  deptStatus?: string;
+  status?: string;
+  routingReason?: string | null;
+  citizenSummary?: string | null;
+  summary?: string | null;
+  locationText?: string | null;
+  location?: string | null;
+  isEmergency?: boolean;
+  privacyLevel?: "PUBLIC" | "RESTRICTED" | "PRIVATE";
+  assignedTo?: string;
+  media?: Array<{
+    id: string;
+    fileName: string;
+    mimeType: string;
+    fileSize: number;
+    storageUrl: string | null;
+  }>;
+  createdAt?: string;
+  timestamp?: string;
 }
 
 function mapToIncidentData(inc: APIIncident): IncidentData {
   return {
-    id: inc.incidentId,
-    trackingId: inc.publicReference,
+    id: inc.incidentId || inc.id || "",
+    trackingId: inc.publicReference || inc.trackingId || "",
     category: inc.title || "Untitled Report",
-    summary: inc.citizenSummary || inc.routingReason || "No description available",
-    location: inc.locationText || "Nagpur, Maharashtra",
-    timestamp: inc.createdAt,
-    status: inc.deptStatus,
-    priority: inc.priorityScore || 0,
-    privacyLevel: "PUBLIC" as const,
+    summary: inc.citizenSummary || inc.summary || inc.routingReason || "No description available",
+    location: inc.locationText || inc.location || "Nagpur, Maharashtra",
+    timestamp: inc.createdAt || inc.timestamp || new Date().toISOString(),
+    status: inc.deptStatus || inc.status || "ROUTED",
+    priority: inc.priorityScore || inc.priority || 0,
+    privacyLevel: inc.privacyLevel || "PUBLIC",
+    assignedTo: inc.assignedTo,
+    media: inc.media,
   };
 }
 
@@ -68,16 +86,9 @@ export default function IncidentDeskPage({
     setLoading(true);
     try {
       // Map filter to API status
-      const statusMap: Record<string, string> = {
-        all: "",
-        incoming: "ROUTED",
-        in_progress: "IN_PROGRESS",
-        resolved: "RESOLVED",
-      };
-      const status = statusMap[activeFilter] || "";
-
+      let statusParam = activeFilter;
       const res = await fetch(
-        `/api/department/${code}/incidents?limit=50&status=${status}`
+        `/api/department/${code}/incidents?limit=50&status=${statusParam}`
       );
       if (res.ok) {
         const d = await res.json();
@@ -112,32 +123,88 @@ export default function IncidentDeskPage({
   }, [fetchIncidents]);
 
   const handleAccept = async (id: string) => {
-    // Update status in UI optimistically
+    // Optimistic UI update
     setIncidents((prev) =>
       prev.map((inc) =>
         inc.id === id ? { ...inc, status: "ASSIGNED" } : inc
       )
     );
     setSelectedIncident(null);
+
+    // Save to TiDB
+    try {
+      const res = await fetch(`/api/department/${code}/incidents`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          incidentId: id,
+          action: "ACCEPT",
+        }),
+      });
+      if (res.ok) {
+        await fetchIncidents();
+      }
+    } catch (err) {
+      console.error("[IncidentDesk] Accept API error:", err);
+    }
   };
 
   const handleResolve = async (id: string) => {
+    // Optimistic UI update
     setIncidents((prev) =>
       prev.map((inc) =>
         inc.id === id ? { ...inc, status: "RESOLVED" } : inc
       )
     );
     setSelectedIncident(null);
+
+    // Save to TiDB
+    try {
+      const res = await fetch(`/api/department/${code}/incidents`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          incidentId: id,
+          action: "RESOLVE",
+        }),
+      });
+      if (res.ok) {
+        await fetchIncidents();
+      }
+    } catch (err) {
+      console.error("[IncidentDesk] Resolve API error:", err);
+    }
   };
 
   const handleAssignTask = async (id: string, assignment: any) => {
+    // Optimistic UI update
     setIncidents((prev) =>
       prev.map((inc) =>
         inc.id === id
-          ? { ...inc, status: "ASSIGNED", assignedTo: assignment.workerId }
+          ? { ...inc, status: "IN_PROGRESS", assignedTo: assignment.workerName || assignment.workerId }
           : inc
       )
     );
+
+    // Save to TiDB
+    try {
+      const res = await fetch(`/api/department/${code}/incidents`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          incidentId: id,
+          action: "ASSIGN",
+          workerId: assignment.workerId,
+          workerName: assignment.workerName || assignment.workerId,
+          notes: assignment.notes || assignment.instructions,
+        }),
+      });
+      if (res.ok) {
+        await fetchIncidents();
+      }
+    } catch (err) {
+      console.error("[IncidentDesk] Assign API error:", err);
+    }
   };
 
   return (
@@ -147,8 +214,6 @@ export default function IncidentDeskPage({
         departmentIcon={dept.icon}
         criticalCount={criticalCount}
       />
-
-      <DepartmentSubNav departmentCode={code} />
 
       {/* Filters */}
       <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">

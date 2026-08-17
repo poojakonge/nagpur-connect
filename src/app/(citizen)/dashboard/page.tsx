@@ -327,9 +327,19 @@ export default function CitizenDashboard() {
     [analysisResult, draft.draft]
   );
 
+  /** Helper to convert File to base64 Data URL */
+  const fileToDataUrl = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = (err) => reject(err);
+      reader.readAsDataURL(file);
+    });
+  };
+
   /**
    * Called when citizen presses "Submit Report" on the final_review screen.
-   * Actually persists the incident to TiDB.
+   * Actually persists the incident and media attachments to TiDB.
    */
   const handleProceed = useCallback(
     async (answers: Record<string, string | string[]>) => {
@@ -354,6 +364,26 @@ export default function CitizenDashboard() {
           }))
           .filter((item) => item.answerValue) || [];
 
+        // Convert photos to data URLs for storage
+        const attachments = await Promise.all(
+          (draft.draft.photos || []).map(async (file) => {
+            try {
+              const dataUrl = await fileToDataUrl(file);
+              return {
+                fileName: file.name,
+                mimeType: file.type || "image/jpeg",
+                fileSize: file.size,
+                storageUrl: dataUrl,
+                purpose: "evidence",
+              };
+            } catch (fileErr) {
+              console.warn("[Citizen] Failed to read photo:", fileErr);
+              return null;
+            }
+          })
+        );
+        const validAttachments = attachments.filter((a): a is NonNullable<typeof a> => a !== null);
+
         const res = await fetch("/api/incidents/create", {
           method: "POST",
           headers: citizenHeaders(),
@@ -367,6 +397,7 @@ export default function CitizenDashboard() {
             selectedDepartment: draft.draft.selectedCategory || null,
             aiConversation,
             finalReport: finalReport || null,
+            attachments: validAttachments,
           }),
         });
 
@@ -938,6 +969,16 @@ export default function CitizenDashboard() {
             onGoHome={goHome}
           />
         )}
+
+        {/* Hidden file input for photo uploads */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={handleFileChange}
+        />
       </main>
 
       {/* Global CSS animations */}

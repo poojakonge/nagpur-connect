@@ -59,6 +59,7 @@ export async function POST(request: NextRequest) {
       aiConversation,
       finalReport: clientFinalReport,
       privacyLevel: clientPrivacy,
+      attachments,
     } = body as {
       originalText: string;
       originalTranscript?: string;
@@ -71,6 +72,13 @@ export async function POST(request: NextRequest) {
       aiConversation?: AIConversationItem[];
       finalReport?: Record<string, unknown> | null;
       privacyLevel?: string;
+      attachments?: Array<{
+        fileName: string;
+        mimeType: string;
+        fileSize: number;
+        storageUrl: string;
+        purpose?: string;
+      }>;
     };
 
     if (!analysis || !analysis.summary) {
@@ -217,6 +225,32 @@ export async function POST(request: NextRequest) {
       } catch (qaErr) {
         // Q&A table may not exist yet — non-fatal
         console.warn("[API] AI conversations table not available:", qaErr);
+      }
+    }
+
+    // Insert attachments into incident_media if provided
+    if (attachments && Array.isArray(attachments) && attachments.length > 0) {
+      try {
+        for (const att of attachments) {
+          if (!att.storageUrl) continue;
+          await execute(
+            `INSERT INTO incident_media (
+              id, incident_id, file_name, mime_type, file_size, storage_url, purpose, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+            [
+              ulid(),
+              incidentId,
+              att.fileName || "attachment.jpg",
+              att.mimeType || "image/jpeg",
+              att.fileSize || 0,
+              att.storageUrl,
+              att.purpose || "evidence",
+            ]
+          );
+        }
+        console.log(`[API] Stored ${attachments.length} attachments for incident ${publicReference}`);
+      } catch (mediaErr) {
+        console.warn("[API] Failed to store attachments (non-fatal):", mediaErr);
       }
     }
 
