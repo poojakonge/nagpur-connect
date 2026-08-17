@@ -28,8 +28,6 @@ import {
 
 const TIMESLICE_MS = 250;      // ondataavailable fires every 250ms — keeps track alive
 const MAX_RECORDING_MS = 60_000;
-const POLL_INTERVAL_MS = 2_000;
-const POLL_TIMEOUT_MS = 120_000; // 2 minutes max wait
 
 export class MobileRecorderProvider implements ClientSpeechProvider {
   readonly name = "mobile-recorder";
@@ -232,75 +230,43 @@ export class MobileRecorderProvider implements ClientSpeechProvider {
     }
   }
 
-  /** Upload blob → create job → poll → return transcript */
+  /** Send blob to /api/speech/transcribe (Groq Whisper) — returns in 1-3s */
   private async transcribeBlob(
     blob: Blob,
     sessionId: string,
     s: string
   ): Promise<void> {
     try {
-      // Step 1: Upload audio + create AssemblyAI job
       const form = new FormData();
       form.append("audio", blob, "recording.webm");
 
-      const postRes = await fetch("/api/speech/transcribe", {
+      console.log(`[Mic][${s}] transcription started — ${blob.size}B`);
+
+      const res = await fetch("/api/speech/transcribe", {
         method: "POST",
         body: form,
+        signal: AbortSignal.timeout(25_000), // 25s hard timeout
       });
 
-      if (!postRes.ok) {
-        const err = await postRes.json().catch(() => ({}));
-        throw new Error(err.error || `Upload HTTP ${postRes.status}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
       }
 
-      const { jobId } = await postRes.json();
-      console.log(`[Mic][${s}] job created: ${jobId}`);
+      const data = await res.json();
+      const transcript = (data.transcript || "").trim();
+      console.log(`[Mic][${s}] transcription completed: "${transcript.slice(0, 80)}"`);
 
       if (this.sessionId !== sessionId) return;
 
-      // Step 2: Poll until complete
-      const deadline = Date.now() + POLL_TIMEOUT_MS;
-
-      while (Date.now() < deadline) {
-        await sleep(POLL_INTERVAL_MS);
-
-        if (this.sessionId !== sessionId) return;
-
-        const pollRes = await fetch(
-          `/api/speech/transcribe?id=${encodeURIComponent(jobId)}`
-        );
-
-        if (!pollRes.ok) {
-          console.warn(`[Mic][${s}] Poll HTTP ${pollRes.status} — retrying`);
-          continue;
-        }
-
-        const data = await pollRes.json();
-        console.log(`[Mic][${s}] poll status: ${data.status}`);
-
-        if (data.status === "completed") {
-          const transcript = (data.transcript || "").trim();
-          console.log(`[Mic][${s}] transcription completed: "${transcript.slice(0, 80)}"`);
-
-          if (transcript) {
-            this.onResult?.(transcript, true);
-          } else {
-            this.onError?.(
-              "No speech detected. Please speak clearly and try again."
-            );
-          }
-
-          this.onStateChange?.("idle");
-          this.isActive = false;
-          return;
-
-        } else if (data.status === "error") {
-          throw new Error(data.error || "Transcription failed");
-        }
-        // "queued" | "processing" — keep polling
+      if (transcript) {
+        this.onResult?.(transcript, true);
+      } else {
+        this.onError?.("No speech detected. Please speak clearly and try again.");
       }
 
-      throw new Error("Transcription timed out");
+      this.onStateChange?.("idle");
+      this.isActive = false;
 
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -314,6 +280,7 @@ export class MobileRecorderProvider implements ClientSpeechProvider {
       }
     }
   }
+
 
   stop(): void {
     const s = (this.sessionId || "").slice(0, 8);
@@ -367,8 +334,4 @@ export class MobileRecorderProvider implements ClientSpeechProvider {
     if (s) console.log(`[Mic][${s}] CLEANED UP`);
     this.onStateChange?.("idle");
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
 }
