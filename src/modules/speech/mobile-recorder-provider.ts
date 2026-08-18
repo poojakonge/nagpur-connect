@@ -148,7 +148,9 @@ export class MobileRecorderProvider implements ClientSpeechProvider {
       this.mimeType = this.selectMimeType();
       console.log(`[Mic][${s}] mimeType selected: "${this.mimeType}"`);
 
-      const recOpts: MediaRecorderOptions = {};
+      const recOpts: MediaRecorderOptions = {
+        audioBitsPerSecond: 32000,
+      };
       if (this.mimeType) recOpts.mimeType = this.mimeType;
 
       this.recorder = new MediaRecorder(stream, recOpts);

@@ -167,37 +167,8 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
       providerRef.current = null;
     }
 
-    // ── MOBILE PATH ─────────────────────────────────────────
-    // Android Chrome cannot sustain a real-time AssemblyAI WebSocket
-    // stream (audio pipeline gets throttled after ~1-2s by the OS).
-    // Mobile devices use MobileRecorderProvider instead:
-    //   record complete audio → batch-transcribe on stop.
-    if (isMobile) {
-      try {
-        const { MobileRecorderProvider } = await import("./mobile-recorder-provider");
-        const provider = new MobileRecorderProvider();
-        wireCallbacks(provider);
-        providerRef.current = provider;
-        setProviderName("mobile-recorder");
-
-        if (sessionIdRef.current !== newSessionId) {
-          setState("idle");
-          return;
-        }
-
-        await provider.start({ language });
-        sessionIdRef.current = provider.sessionId;
-      } catch (err) {
-        console.error("[Speech] MobileRecorderProvider failed:", err);
-        setError("Could not start recording. Please try again.");
-        setState("error");
-      }
-      return;
-    }
-
-    // ── DESKTOP PATH ────────────────────────────────────────
-    // 1. If Browser Speech API is natively supported (Chrome, Edge, Safari, Opera),
-    //    use it for zero-latency, unbreakable real-time streaming speech recognition.
+    // ── PRIMARY TIER: Native Browser Speech API (Chrome, Edge, Safari, Android Chrome) ──
+    // Zero-latency, real-time live streaming speech recognition without network lag.
     const browser = new BrowserSpeechProvider();
     if (browser.isSupported) {
       try {
@@ -218,8 +189,8 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
       }
     }
 
-    // 2. Fallback for browsers without native Web Speech API (e.g. Firefox)
-    //    Record via MediaRecorder and transcribe with Groq Whisper Large v3 Turbo.
+    // ── SECONDARY TIER: High-Accuracy AI Speech Recorder (Groq Whisper) ──
+    // Fallback for browsers without native Web Speech API (Firefox, custom WebViews)
     try {
       const { MobileRecorderProvider } = await import("./mobile-recorder-provider");
       const provider = new MobileRecorderProvider();
@@ -239,7 +210,7 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
       setError("Voice input is not supported in this browser. Please type your report instead.");
       setState("error");
     }
-  }, [language, wireCallbacks, isMobile]);
+  }, [language, wireCallbacks]);
 
   const stopRecording = useCallback(() => {
     providerRef.current?.stop();
