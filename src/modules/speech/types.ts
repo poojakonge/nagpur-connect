@@ -44,15 +44,10 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
   private recognition: SpeechRecognitionType | null = null;
   private isRecording = false;
 
-  /**
-   * Track the highest result index we've already committed as final.
-   * This prevents the Web Speech API from re-delivering old finals
-   * when continuous mode fires onresult with cumulative results.
-   */
-  private lastCommittedFinalIndex = -1;
-
-  /** Track last final text to deduplicate identical consecutive finals */
-  private lastFinalText = "";
+  /** Accumulated final text from previous recognition instances in this session */
+  private sessionHistoryText = "";
+  /** Final text from the currently active recognition instance */
+  private currentInstanceFinalText = "";
 
   sessionId: string | null = null;
 
@@ -80,9 +75,9 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
       this.recognition = null;
     }
 
-    // Reset dedup state for new session
-    this.lastCommittedFinalIndex = -1;
-    this.lastFinalText = "";
+    // Reset session state
+    this.sessionHistoryText = "";
+    this.currentInstanceFinalText = "";
     this.sessionId = crypto.randomUUID();
     this.isRecording = true;
 
@@ -110,31 +105,33 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
       rec.onresult = (event: any) => {
         if (this.sessionId !== currentSessionId) return;
 
-        let latestInterim = "";
+        let instanceFinal = "";
+        let instanceInterim = "";
 
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i];
-          const transcript = result[0]?.transcript || "";
+        // Iterate through all results in the current recognition buffer
+        for (let i = 0; i < event.results.length; i++) {
+          const res = event.results[i];
+          const text = (res[0]?.transcript || "").trim();
+          if (!text) continue;
 
-          if (result.isFinal) {
-            if (i <= this.lastCommittedFinalIndex) continue;
-
-            const trimmed = transcript.trim();
-            if (trimmed && trimmed === this.lastFinalText) continue;
-
-            this.lastCommittedFinalIndex = i;
-            this.lastFinalText = trimmed;
-
-            if (trimmed) {
-              this.onResult?.(trimmed, true);
-            }
+          if (res.isFinal) {
+            instanceFinal = instanceFinal ? `${instanceFinal} ${text}` : text;
           } else {
-            latestInterim = transcript;
+            instanceInterim = instanceInterim ? `${instanceInterim} ${text}` : text;
           }
         }
 
-        if (latestInterim) {
-          this.onResult?.(latestInterim, false);
+        this.currentInstanceFinalText = instanceFinal;
+
+        const totalFinal = [this.sessionHistoryText, instanceFinal].filter(Boolean).join(" ").trim();
+        const totalDisplay = [totalFinal, instanceInterim].filter(Boolean).join(" ").trim();
+
+        if (instanceInterim) {
+          // Send live progressive preview
+          this.onResult?.(totalDisplay, false);
+        } else if (instanceFinal) {
+          // Commit clean final sentence
+          this.onResult?.(totalFinal, true);
         }
       };
 
@@ -146,7 +143,7 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
           this.onStateChange?.("permission_denied");
           this.onError?.("Microphone permission denied. Please allow microphone access.");
         } else if (event.error === "no-speech") {
-          // Normal pause during speaking — do not stop or treat as fatal error
+          // Normal pause during speaking — do not stop
         } else if (event.error === "aborted" || event.error === "network") {
           // Intentional abort or transient network retry
         } else {
@@ -157,8 +154,13 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
       rec.onend = () => {
         if (this.sessionId !== currentSessionId) return;
 
-        // If user is still actively recording, restart smoothly after a short delay (100ms)
-        // to prevent Chrome InvalidStateError
+        // Save finalized text from this instance into session history
+        if (this.currentInstanceFinalText) {
+          this.sessionHistoryText = [this.sessionHistoryText, this.currentInstanceFinalText].filter(Boolean).join(" ").trim();
+          this.currentInstanceFinalText = "";
+        }
+
+        // Auto-restart across pauses if user is still recording
         if (this.isRecording) {
           setTimeout(() => {
             if (this.isRecording && this.sessionId === currentSessionId) {
@@ -168,7 +170,7 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
                 console.warn("[Speech] Restart failed:", err);
               }
             }
-          }, 100);
+          }, 80);
           return;
         }
 
@@ -202,8 +204,8 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
     const rec = this.recognition;
     this.recognition = null;
     this.sessionId = null;
-    this.lastCommittedFinalIndex = -1;
-    this.lastFinalText = "";
+    this.sessionHistoryText = "";
+    this.currentInstanceFinalText = "";
 
     if (rec) {
       try { rec.abort(); } catch { /* ignore */ }

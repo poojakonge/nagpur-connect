@@ -85,31 +85,11 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
         const trimmed = text.trim();
         if (!trimmed) return;
 
-        if (provider.name === "assemblyai") {
-          // AssemblyAI v3 emits full accumulated turn text
-          committedSegmentsRef.current = [trimmed];
-          setTranscript(trimmed);
-          setInterimTranscript("");
-        } else {
-          // Browser Web Speech API & Mobile Recorder emit separate sentences per pause!
-          // Append new segment so speech after 1s pauses is seamlessly preserved
-          const existing = committedSegmentsRef.current;
-          if (existing.length === 0 || existing[existing.length - 1] !== trimmed) {
-            committedSegmentsRef.current = [...existing, trimmed];
-          }
-          const accumulated = committedSegmentsRef.current.join(" ");
-          setTranscript(accumulated);
-          setInterimTranscript("");
-        }
+        setTranscript(trimmed);
+        setInterimTranscript("");
       } else {
-        // Partial: show accumulated committed text + current interim
-        if (provider.name === "assemblyai") {
-          setInterimTranscript(text);
-        } else {
-          const committed = committedSegmentsRef.current.join(" ");
-          const displayInterim = committed ? `${committed} ${text}` : text;
-          setInterimTranscript(displayInterim);
-        }
+        // Live partial/interim words
+        setInterimTranscript(text.trim());
       }
     };
 

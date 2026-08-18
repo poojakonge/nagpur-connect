@@ -616,13 +616,13 @@ export default function CitizenDashboard() {
                     ? (speech.isMobile ? "Transcribing your speech\u2026" : "Processing...")
                     : "Speak now"}
                 </p>
-                {speech.interimTranscript && (
-                  <p className="text-sm text-text-secondary italic mt-2">
-                    &ldquo;{speech.interimTranscript}&rdquo;
-                  </p>
-                )}
-                {speech.transcript && (
-                  <p className="text-sm text-text-primary mt-2">{speech.transcript}</p>
+                {(speech.interimTranscript || speech.transcript) && (
+                  <div className="mt-3 p-3 rounded-xl bg-surface-1 border border-border/50 text-left">
+                    <p className="text-xs text-text-tertiary mb-1 font-semibold uppercase tracking-wider">Live Transcript:</p>
+                    <p className="text-sm text-text-primary leading-relaxed font-medium">
+                      {speech.interimTranscript || speech.transcript}
+                    </p>
+                  </div>
                 )}
                 {/* Only show Stop button while actively recording — not while batch-transcribing */}
                 {speech.isRecording && (
