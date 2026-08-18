@@ -90,91 +90,101 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
       (window as any).SpeechRecognition ||
       (window as any).webkitSpeechRecognition;
 
-    this.recognition = new SpeechRec();
-    this.recognition.lang = config?.language || "en-IN";
-    this.recognition.continuous = true;
-    this.recognition.interimResults = true;
-
     const currentSessionId = this.sessionId;
+    const lang = config?.language || "en-IN";
 
-    this.recognition.onstart = () => {
-      if (this.sessionId !== currentSessionId) return;
-      this.onStateChange?.("recording");
-    };
+    const initRecognition = () => {
+      if (!this.isRecording || this.sessionId !== currentSessionId) return;
 
-    this.recognition.onresult = (event: any) => {
-      // Guard: ignore results from stale sessions
-      if (this.sessionId !== currentSessionId) return;
+      const rec = new SpeechRec();
+      rec.lang = lang;
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.maxAlternatives = 1;
 
-      let latestInterim = "";
+      rec.onstart = () => {
+        if (this.sessionId !== currentSessionId) return;
+        this.onStateChange?.("recording");
+      };
 
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        const transcript = result[0].transcript;
+      rec.onresult = (event: any) => {
+        if (this.sessionId !== currentSessionId) return;
 
-        if (result.isFinal) {
-          // Skip if we already committed this result index
-          if (i <= this.lastCommittedFinalIndex) continue;
+        let latestInterim = "";
 
-          // Skip identical consecutive finals (dedup)
-          const trimmed = transcript.trim();
-          if (trimmed && trimmed === this.lastFinalText) continue;
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i];
+          const transcript = result[0]?.transcript || "";
 
-          this.lastCommittedFinalIndex = i;
-          this.lastFinalText = trimmed;
+          if (result.isFinal) {
+            if (i <= this.lastCommittedFinalIndex) continue;
 
-          if (trimmed) {
-            this.onResult?.(trimmed, true);
+            const trimmed = transcript.trim();
+            if (trimmed && trimmed === this.lastFinalText) continue;
+
+            this.lastCommittedFinalIndex = i;
+            this.lastFinalText = trimmed;
+
+            if (trimmed) {
+              this.onResult?.(trimmed, true);
+            }
+          } else {
+            latestInterim = transcript;
           }
+        }
+
+        if (latestInterim) {
+          this.onResult?.(latestInterim, false);
+        }
+      };
+
+      rec.onerror = (event: any) => {
+        if (this.sessionId !== currentSessionId) return;
+
+        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+          this.isRecording = false;
+          this.onStateChange?.("permission_denied");
+          this.onError?.("Microphone permission denied. Please allow microphone access.");
+        } else if (event.error === "no-speech") {
+          // Normal pause during speaking — do not stop or treat as fatal error
+        } else if (event.error === "aborted" || event.error === "network") {
+          // Intentional abort or transient network retry
         } else {
-          // For interim results, only use the LATEST one
-          latestInterim = transcript;
+          console.warn("[Speech] Web Speech API notice:", event.error);
         }
-      }
+      };
 
-      // Emit the latest interim (replaces previous interim in UI)
-      if (latestInterim) {
-        this.onResult?.(latestInterim, false);
-      }
-    };
+      rec.onend = () => {
+        if (this.sessionId !== currentSessionId) return;
 
-    this.recognition.onerror = (event: any) => {
-      if (this.sessionId !== currentSessionId) return;
-
-      if (event.error === "not-allowed") {
-        this.isRecording = false;
-        this.onStateChange?.("permission_denied");
-        this.onError?.("Microphone permission denied");
-      } else if (event.error === "no-speech") {
-        // no-speech is normal during pauses, don't treat as error
-      } else if (event.error === "aborted") {
-        // Intentional abort
-      } else {
-        this.onStateChange?.("error");
-        this.onError?.(event.error);
-      }
-    };
-
-    this.recognition.onend = () => {
-      if (this.sessionId !== currentSessionId) return;
-
-      // If user is still recording and browser auto-paused after a 1s silence, restart seamlessly
-      if (this.isRecording) {
-        try {
-          this.recognition?.start();
+        // If user is still actively recording, restart smoothly after a short delay (100ms)
+        // to prevent Chrome InvalidStateError
+        if (this.isRecording) {
+          setTimeout(() => {
+            if (this.isRecording && this.sessionId === currentSessionId) {
+              try {
+                this.recognition = initRecognition();
+              } catch (err) {
+                console.warn("[Speech] Restart failed:", err);
+              }
+            }
+          }, 100);
           return;
-        } catch {
-          // If restart fails, fallback to idle
         }
+
+        this.onStateChange?.("idle");
+      };
+
+      try {
+        rec.start();
+      } catch (err) {
+        console.warn("[Speech] rec.start error:", err);
       }
-      this.onStateChange?.("idle");
+
+      return rec;
     };
 
-    try {
-      this.recognition.start();
-    } catch (err) {
-      console.warn("[Speech] recognition.start error:", err);
-    }
+    this.recognition = initRecognition();
   }
 
   stop(): void {

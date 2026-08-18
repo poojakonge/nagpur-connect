@@ -147,36 +147,25 @@ export default function CitizenDashboard() {
 
   const stopRecordingAndPreview = useCallback(() => {
     speech.stopRecording();
-
-    // Desktop streaming: transcript is available synchronously after stop.
-    // Mobile batch: transcript arrives async (batch transcription takes 5-20s).
-    // On mobile, don't navigate yet — the useEffect below handles auto-advance.
     if (speech.transcript) {
       draft.appendText(speech.transcript);
       speech.resetTranscript();
-      setView("preview");
     }
-    // If no transcript yet: state will go to "processing", UI stays on composing.
-    // useEffect watches for transcript + idle to auto-advance.
   }, [speech, draft]);
 
-  // Auto-advance to preview when mobile batch transcription completes.
-  // When MobileRecorderProvider finishes: onResult fires (sets speech.transcript),
-  // then onStateChange("idle") fires. We react to that combination here.
+  // When speech transcript arrives (e.g. mobile batch or continuous streaming),
+  // automatically update the draft text seamlessly without abrupt navigation
   useEffect(() => {
     if (
       view === "composing" &&
-      draft.draft.source === "voice" &&
-      speech.state === "idle" &&
       !speech.isRecording &&
+      speech.state === "idle" &&
       speech.transcript
     ) {
       draft.appendText(speech.transcript);
       speech.resetTranscript();
-      setView("preview");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [speech.state, speech.transcript]);
+  }, [view, speech.state, speech.isRecording, speech.transcript, draft]);
 
   const goToPreview = useCallback(() => setView("preview"), []);
   const goBackToComposing = useCallback(() => setView("composing"), []);

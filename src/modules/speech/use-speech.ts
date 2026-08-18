@@ -196,64 +196,48 @@ export function useSpeech(language = "en-IN"): UseSpeechReturn {
     }
 
     // ── DESKTOP PATH ────────────────────────────────────────
-    // Try AssemblyAI real-time streaming first, fall back to browser speech.
-    let useAssemblyAI = false;
-    try {
-      const tokenRes = await fetch("/api/speech/token", {
-        signal: AbortSignal.timeout(5000),
-      });
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json();
-        if (tokenData.token) {
-          useAssemblyAI = true;
-        }
-      }
-    } catch {
-      console.log("[Speech] AssemblyAI token unavailable, using browser speech");
-    }
-
-    if (sessionIdRef.current !== newSessionId) {
-      setState("idle");
-      return;
-    }
-
-    if (useAssemblyAI) {
+    // 1. If Browser Speech API is natively supported (Chrome, Edge, Safari, Opera),
+    //    use it for zero-latency, unbreakable real-time streaming speech recognition.
+    const browser = new BrowserSpeechProvider();
+    if (browser.isSupported) {
       try {
-        const { AssemblyAiProvider } = await import("./assembly-ai-provider");
-        const provider = new AssemblyAiProvider();
-        wireCallbacks(provider);
-        providerRef.current = provider;
-        setProviderName("assemblyai");
+        wireCallbacks(browser);
+        providerRef.current = browser;
+        setProviderName("browser");
 
         if (sessionIdRef.current !== newSessionId) {
           setState("idle");
           return;
         }
 
-        await provider.start({ language, continuous: true, interimResults: true });
-        sessionIdRef.current = provider.sessionId;
-      } catch (importErr) {
-        console.error("[Speech] AssemblyAI import/start failed:", importErr);
-        useAssemblyAI = false;
+        browser.start({ language, continuous: true, interimResults: true });
+        sessionIdRef.current = browser.sessionId;
+        return;
+      } catch (browserErr) {
+        console.warn("[Speech] Native browser speech failed to start, falling back to audio recorder:", browserErr);
       }
     }
 
-    if (!useAssemblyAI) {
-      const browser = new BrowserSpeechProvider();
-      wireCallbacks(browser);
-      providerRef.current = browser;
-      setProviderName("browser");
+    // 2. Fallback for browsers without native Web Speech API (e.g. Firefox)
+    //    Record via MediaRecorder and transcribe with Groq Whisper Large v3 Turbo.
+    try {
+      const { MobileRecorderProvider } = await import("./mobile-recorder-provider");
+      const provider = new MobileRecorderProvider();
+      wireCallbacks(provider);
+      providerRef.current = provider;
+      setProviderName("recorder-ai");
 
-      if (!browser.isSupported) {
-        setError(
-          "Voice input is not supported in this browser. Please type your report instead."
-        );
-        setState("error");
+      if (sessionIdRef.current !== newSessionId) {
+        setState("idle");
         return;
       }
 
-      browser.start({ language, continuous: true, interimResults: true });
-      sessionIdRef.current = browser.sessionId;
+      await provider.start({ language });
+      sessionIdRef.current = provider.sessionId;
+    } catch (recorderErr) {
+      console.error("[Speech] Audio recording fallback failed:", recorderErr);
+      setError("Voice input is not supported in this browser. Please type your report instead.");
+      setState("error");
     }
   }, [language, wireCallbacks, isMobile]);
 
