@@ -22,6 +22,7 @@ import { DeptMismatch } from "@/components/citizen/dept-mismatch";
 import { DeptQuestions } from "@/components/citizen/dept-questions";
 import NearestFacilities from "@/components/citizen/nearest-facilities";
 import { useSpeech } from "@/modules/speech/use-speech";
+import { mergeTranscripts } from "@/modules/speech/types";
 import { useIncidentDraft } from "@/modules/incidents/use-incident-draft";
 import { getOrCreateGuestId, citizenHeaders } from "@/lib/guest-id";
 import type { AnalysisResult } from "@/modules/ai/engine";
@@ -148,13 +149,13 @@ export default function CitizenDashboard() {
   const stopRecordingAndPreview = useCallback(() => {
     speech.stopRecording();
     if (speech.transcript) {
-      draft.appendText(speech.transcript);
+      draft.updateText(mergeTranscripts(draft.draft.text, speech.transcript));
       speech.resetTranscript();
     }
   }, [speech, draft]);
 
   // When speech transcript arrives (e.g. mobile batch or continuous streaming),
-  // automatically update the draft text seamlessly without abrupt navigation
+  // automatically update the draft text seamlessly without repetitive stutter
   useEffect(() => {
     if (
       view === "composing" &&
@@ -162,7 +163,7 @@ export default function CitizenDashboard() {
       speech.state === "idle" &&
       speech.transcript
     ) {
-      draft.appendText(speech.transcript);
+      draft.updateText(mergeTranscripts(draft.draft.text, speech.transcript));
       speech.resetTranscript();
     }
   }, [view, speech.state, speech.isRecording, speech.transcript, draft]);

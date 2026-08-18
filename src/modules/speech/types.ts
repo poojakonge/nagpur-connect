@@ -38,6 +38,47 @@ export interface ClientSpeechProvider {
 // Web Speech API type declarations (not in all TS libs)
 type SpeechRecognitionType = any;
 
+/**
+ * Intelligently merges transcripts across progressive events, pauses, and restarts
+ * without repetitive word stutter or duplicate phrases.
+ */
+export function mergeTranscripts(history: string, current: string): string {
+  const h = (history || "").trim();
+  const c = (current || "").trim();
+  if (!h) return c;
+  if (!c) return h;
+  if (h === c) return c;
+
+  const hLower = h.toLowerCase();
+  const cLower = c.toLowerCase();
+
+  // If current already starts with or equals history, current is the complete superset
+  if (cLower.startsWith(hLower)) {
+    return c;
+  }
+
+  // If history already ends with or equals current, history already contains it
+  if (hLower.endsWith(cLower)) {
+    return h;
+  }
+
+  // Check for suffix/prefix word-level overlap
+  const hWords = h.split(/\s+/);
+  const cWords = c.split(/\s+/);
+  const maxOverlap = Math.min(hWords.length, cWords.length);
+
+  for (let len = maxOverlap; len > 0; len--) {
+    const hSuffix = hWords.slice(-len).join(" ").toLowerCase();
+    const cPrefix = cWords.slice(0, len).join(" ").toLowerCase();
+    if (hSuffix === cPrefix) {
+      return hWords.concat(cWords.slice(len)).join(" ");
+    }
+  }
+
+  // No overlap: cleanly join with space
+  return `${h} ${c}`;
+}
+
 /** Browser Web Speech API provider — works offline, no API key needed */
 export class BrowserSpeechProvider implements ClientSpeechProvider {
   readonly name = "browser";
@@ -123,8 +164,10 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
 
         this.currentInstanceFinalText = instanceFinal;
 
-        const totalFinal = [this.sessionHistoryText, instanceFinal].filter(Boolean).join(" ").trim();
-        const totalDisplay = [totalFinal, instanceInterim].filter(Boolean).join(" ").trim();
+        const totalFinal = mergeTranscripts(this.sessionHistoryText, instanceFinal);
+        const totalDisplay = instanceInterim
+          ? mergeTranscripts(totalFinal, instanceInterim)
+          : totalFinal;
 
         if (instanceInterim) {
           // Send live progressive preview
@@ -154,9 +197,9 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
       rec.onend = () => {
         if (this.sessionId !== currentSessionId) return;
 
-        // Save finalized text from this instance into session history
+        // Save finalized text from this instance into session history without repetition
         if (this.currentInstanceFinalText) {
-          this.sessionHistoryText = [this.sessionHistoryText, this.currentInstanceFinalText].filter(Boolean).join(" ").trim();
+          this.sessionHistoryText = mergeTranscripts(this.sessionHistoryText, this.currentInstanceFinalText);
           this.currentInstanceFinalText = "";
         }
 
