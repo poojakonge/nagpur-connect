@@ -85,11 +85,6 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
   private recognition: SpeechRecognitionType | null = null;
   private isRecording = false;
 
-  /** Accumulated final text from previous recognition instances in this session */
-  private sessionHistoryText = "";
-  /** Final text from the currently active recognition instance */
-  private currentInstanceFinalText = "";
-
   sessionId: string | null = null;
 
   onResult: ((transcript: string, isFinal: boolean) => void) | null = null;
@@ -116,9 +111,6 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
       this.recognition = null;
     }
 
-    // Reset session state
-    this.sessionHistoryText = "";
-    this.currentInstanceFinalText = "";
     this.sessionId = crypto.randomUUID();
     this.isRecording = true;
 
@@ -129,107 +121,74 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
     const currentSessionId = this.sessionId;
     const lang = config?.language || "en-IN";
 
-    const initRecognition = () => {
-      if (!this.isRecording || this.sessionId !== currentSessionId) return;
+    const rec = new SpeechRec();
+    rec.lang = lang;
+    // On Android/mobile, capture the exact spoken utterance chunk and stop when finished speaking
+    rec.continuous = config?.continuous ?? false;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
 
-      const rec = new SpeechRec();
-      rec.lang = lang;
-      rec.continuous = true;
-      rec.interimResults = true;
-      rec.maxAlternatives = 1;
-
-      rec.onstart = () => {
-        if (this.sessionId !== currentSessionId) return;
-        this.onStateChange?.("recording");
-      };
-
-      rec.onresult = (event: any) => {
-        if (this.sessionId !== currentSessionId) return;
-
-        let instanceFinal = "";
-        let instanceInterim = "";
-
-        // Iterate through all results in the current recognition buffer
-        for (let i = 0; i < event.results.length; i++) {
-          const res = event.results[i];
-          const text = (res[0]?.transcript || "").trim();
-          if (!text) continue;
-
-          if (res.isFinal) {
-            instanceFinal = instanceFinal ? `${instanceFinal} ${text}` : text;
-          } else {
-            instanceInterim = instanceInterim ? `${instanceInterim} ${text}` : text;
-          }
-        }
-
-        this.currentInstanceFinalText = instanceFinal;
-
-        const totalFinal = mergeTranscripts(this.sessionHistoryText, instanceFinal);
-        const totalDisplay = instanceInterim
-          ? mergeTranscripts(totalFinal, instanceInterim)
-          : totalFinal;
-
-        if (instanceInterim) {
-          // Send live progressive preview
-          this.onResult?.(totalDisplay, false);
-        } else if (instanceFinal) {
-          // Commit clean final sentence
-          this.onResult?.(totalFinal, true);
-        }
-      };
-
-      rec.onerror = (event: any) => {
-        if (this.sessionId !== currentSessionId) return;
-
-        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-          this.isRecording = false;
-          this.onStateChange?.("permission_denied");
-          this.onError?.("Microphone permission denied. Please allow microphone access.");
-        } else if (event.error === "no-speech") {
-          // Normal pause during speaking — do not stop
-        } else if (event.error === "aborted" || event.error === "network") {
-          // Intentional abort or transient network retry
-        } else {
-          console.warn("[Speech] Web Speech API notice:", event.error);
-        }
-      };
-
-      rec.onend = () => {
-        if (this.sessionId !== currentSessionId) return;
-
-        // Save finalized text from this instance into session history without repetition
-        if (this.currentInstanceFinalText) {
-          this.sessionHistoryText = mergeTranscripts(this.sessionHistoryText, this.currentInstanceFinalText);
-          this.currentInstanceFinalText = "";
-        }
-
-        // Auto-restart across pauses if user is still recording
-        if (this.isRecording) {
-          setTimeout(() => {
-            if (this.isRecording && this.sessionId === currentSessionId) {
-              try {
-                this.recognition = initRecognition();
-              } catch (err) {
-                console.warn("[Speech] Restart failed:", err);
-              }
-            }
-          }, 80);
-          return;
-        }
-
-        this.onStateChange?.("idle");
-      };
-
-      try {
-        rec.start();
-      } catch (err) {
-        console.warn("[Speech] rec.start error:", err);
-      }
-
-      return rec;
+    rec.onstart = () => {
+      if (this.sessionId !== currentSessionId) return;
+      this.onStateChange?.("recording");
     };
 
-    this.recognition = initRecognition();
+    rec.onresult = (event: any) => {
+      if (this.sessionId !== currentSessionId) return;
+
+      let finalChunk = "";
+      let interimChunk = "";
+
+      // Iterate through all results in the current recognition buffer
+      for (let i = 0; i < event.results.length; i++) {
+        const res = event.results[i];
+        const text = (res[0]?.transcript || "").trim();
+        if (!text) continue;
+
+        if (res.isFinal) {
+          finalChunk = finalChunk ? `${finalChunk} ${text}` : text;
+        } else {
+          interimChunk = interimChunk ? `${interimChunk} ${text}` : text;
+        }
+      }
+
+      if (finalChunk) {
+        // Deliver finalized chunk
+        this.onResult?.(finalChunk, true);
+      } else if (interimChunk) {
+        // Send live progressive preview of current chunk
+        this.onResult?.(interimChunk, false);
+      }
+    };
+
+    rec.onerror = (event: any) => {
+      if (this.sessionId !== currentSessionId) return;
+
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        this.isRecording = false;
+        this.onStateChange?.("permission_denied");
+        this.onError?.("Microphone permission denied. Please allow microphone access.");
+      } else if (event.error === "no-speech") {
+        // Normal pause
+      } else if (event.error === "aborted") {
+        // User stopped
+      } else {
+        console.warn("[Speech] Web Speech notice:", event.error);
+      }
+    };
+
+    rec.onend = () => {
+      if (this.sessionId !== currentSessionId) return;
+      this.isRecording = false;
+      this.onStateChange?.("idle");
+    };
+
+    try {
+      rec.start();
+      this.recognition = rec;
+    } catch (err) {
+      console.warn("[Speech] rec.start error:", err);
+    }
   }
 
   stop(): void {
@@ -247,8 +206,6 @@ export class BrowserSpeechProvider implements ClientSpeechProvider {
     const rec = this.recognition;
     this.recognition = null;
     this.sessionId = null;
-    this.sessionHistoryText = "";
-    this.currentInstanceFinalText = "";
 
     if (rec) {
       try { rec.abort(); } catch { /* ignore */ }
